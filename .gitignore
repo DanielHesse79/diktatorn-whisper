@@ -16,3 +16,6 @@ diktatorn-backend.txt
 
 # Logs / temp
 *.log
+
+# Generated icon preview
+Diktatorn.png

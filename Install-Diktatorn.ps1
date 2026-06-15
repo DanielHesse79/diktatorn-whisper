@@ -63,9 +63,16 @@ if (-not (Test-Path $modelPath)) {
     Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$modelFile" -OutFile $modelPath -Resume
 } else { Step "$modelFile finns redan - hoppar over." }
 
-# 5. Shortcuts
+# 5. Icon (generate the cartoon "generalissimo" .ico)
+$icon = Join-Path $root 'Diktatorn.ico'
+$genIcon = Join-Path $root 'Generate-Icon.ps1'
+if ((-not (Test-Path $icon)) -and (Test-Path $genIcon)) {
+    Step 'Skapar ikon...'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $genIcon -Root $root | Out-Null
+}
+
+# 6. Shortcuts
 Step 'Skapar genvagar...'
-$exe = Join-Path $root 'WhisperDesktop.exe'   # used only for its icon
 $vbs = Join-Path $root 'Diktatorn.vbs'
 $ws = New-Object -ComObject WScript.Shell
 $targets = @([System.Environment]::GetFolderPath('Desktop'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
@@ -75,7 +82,7 @@ foreach ($dir in $targets) {
     $lnk.TargetPath = 'wscript.exe'
     $lnk.Arguments = "`"$vbs`""
     $lnk.WorkingDirectory = $root
-    if (Test-Path $exe) { $lnk.IconLocation = "$exe,0" }
+    if (Test-Path $icon) { $lnk.IconLocation = "$icon,0" }
     $lnk.Description = 'Diktatorn - dictation (Ctrl+Shift / Ctrl+Shift+D) + meeting (Ctrl+Shift+M)'
     $lnk.Save()
 }
