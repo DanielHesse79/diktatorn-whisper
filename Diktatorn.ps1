@@ -267,6 +267,7 @@ $tray.Icon = $icoIdle; $tray.Text = 'Diktatorn - redo'; $tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miInfo = $menu.Items.Add('Hall Ctrl+Shift = diktera  |  Ctrl+Shift+D = toggel'); $miInfo.Enabled = $false
+$miStats = $menu.Items.Add('Talhastighet: - '); $miStats.Enabled = $false
 [void]$menu.Items.Add('-')
 $miMeeting = $menu.Items.Add('Starta motesinspelning (Ctrl+Shift+M)')
 [void]$menu.Items.Add('-')
@@ -334,6 +335,21 @@ function Get-TranscriptText([string]$wav) {
     return ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
 }
 
+# --- Speaking-rate stats ---
+function Get-WavSeconds([string]$path) {
+    try { $r = New-Object NAudio.Wave.WaveFileReader($path); $s = $r.TotalTime.TotalSeconds; $r.Dispose(); return $s } catch { return 0 }
+}
+$script:statChars = 0; $script:statSecs = 0.0; $script:statCount = 0
+function Update-Stats([string]$text, [double]$secs) {
+    if ($secs -lt 0.3 -or -not $text) { return }
+    $chars = $text.Length
+    $script:statChars += $chars; $script:statSecs += $secs; $script:statCount++
+    $cpm = [math]::Round($chars / ($secs / 60))
+    $wpm = [math]::Round(($text -split '\s+').Count / ($secs / 60))
+    $avg = [math]::Round($script:statChars / ($script:statSecs / 60))
+    $miStats.Text = "Talhastighet: $cpm tkn/min (~$wpm ord/min)  |  snitt $avg over $($script:statCount) st"
+}
+
 # --- Dictation (mic via NAudio, 16 kHz/16-bit/mono) ---
 $script:dictating = $false
 $script:micRec = New-Object MicRecorder
@@ -349,8 +365,12 @@ function Stop-Dictation {
     $script:micRec.Stop()
     [System.Windows.Forms.Application]::DoEvents()
     try {
+        $secs = Get-WavSeconds $tmpDict
         $text = Get-TranscriptText $tmpDict
-        if ($text) { Start-Sleep -Milliseconds 40; [WfNative]::TypeText($text + ' ') }
+        if ($text) {
+            Start-Sleep -Milliseconds 40; [WfNative]::TypeText($text + ' ')
+            Update-Stats $text $secs
+        }
     } catch { $tray.ShowBalloonTip(3000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error') }
     finally { Set-Status 'redo' $icoIdle }
 }
