@@ -1,0 +1,18 @@
+# Third-party binaries & dependencies (fetched by Install-Diktatorn.ps1, not redistributed)
+Whisper.dll
+WhisperDesktop.exe
+*.zip
+lib/
+Library/
+WhisperPS/
+Models/
+lz4.txt
+
+# Local config, state, and secrets — never commit
+diktatorn-groq.txt
+diktatorn-mic.txt
+diktatorn-model.txt
+diktatorn-backend.txt
+
+# Logs / temp
+*.log
