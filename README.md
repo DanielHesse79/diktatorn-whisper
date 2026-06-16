@@ -32,10 +32,20 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 
 ## Install
 
+**Easiest — the installer:** run **`Diktatorn-Setup.exe`** (built from `Diktatorn.iss` with Inno Setup;
+published under Releases). It's a per-user install (no admin), creates Start-Menu/desktop shortcuts and an
+uninstaller, and downloads the dependencies automatically.
+
+**Or via PowerShell directly:**
 ```powershell
 # From the repo folder:
 powershell -ExecutionPolicy Bypass -File .\Install-Diktatorn.ps1
-# Options: -Model base|small|medium  (default: small)   -Autostart   (launch at login)
+# Options: -Model base|small|medium  (default: small)   -Autostart   -NoShortcuts
+```
+
+**Build the installer yourself:**
+```powershell
+& "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe" Diktatorn.iss   # -> dist\Diktatorn-Setup.exe
 ```
 
 The installer downloads everything that can't be redistributed here:

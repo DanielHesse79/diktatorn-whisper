@@ -19,3 +19,6 @@ diktatorn-backend.txt
 
 # Generated icon preview
 Diktatorn.png
+
+# Inno Setup build output
+dist/

@@ -15,7 +15,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('base', 'small', 'medium')] [string] $Model = 'small',
-    [switch] $Autostart
+    [switch] $Autostart,
+    [switch] $NoShortcuts   # skip shortcut creation (e.g. when the Setup.exe handles it)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,20 +72,22 @@ if ((-not (Test-Path $icon)) -and (Test-Path $genIcon)) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $genIcon -Root $root | Out-Null
 }
 
-# 6. Shortcuts
-Step 'Skapar genvagar...'
-$vbs = Join-Path $root 'Diktatorn.vbs'
-$ws = New-Object -ComObject WScript.Shell
-$targets = @([System.Environment]::GetFolderPath('Desktop'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
-if ($Autostart) { $targets += [System.Environment]::GetFolderPath('Startup') }
-foreach ($dir in $targets) {
-    $lnk = $ws.CreateShortcut((Join-Path $dir 'Diktatorn.lnk'))
-    $lnk.TargetPath = 'wscript.exe'
-    $lnk.Arguments = "`"$vbs`""
-    $lnk.WorkingDirectory = $root
-    if (Test-Path $icon) { $lnk.IconLocation = "$icon,0" }
-    $lnk.Description = 'Diktatorn - dictation (Ctrl+Shift / Ctrl+Shift+D) + meeting (Ctrl+Shift+M)'
-    $lnk.Save()
+# 6. Shortcuts (skipped when the Setup.exe creates them itself)
+if (-not $NoShortcuts) {
+    Step 'Skapar genvagar...'
+    $vbs = Join-Path $root 'Diktatorn.vbs'
+    $ws = New-Object -ComObject WScript.Shell
+    $targets = @([System.Environment]::GetFolderPath('Desktop'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+    if ($Autostart) { $targets += [System.Environment]::GetFolderPath('Startup') }
+    foreach ($dir in $targets) {
+        $lnk = $ws.CreateShortcut((Join-Path $dir 'Diktatorn.lnk'))
+        $lnk.TargetPath = 'wscript.exe'
+        $lnk.Arguments = "`"$vbs`""
+        $lnk.WorkingDirectory = $root
+        if (Test-Path $icon) { $lnk.IconLocation = "$icon,0" }
+        $lnk.Description = 'Diktatorn - dictation (Ctrl+Shift / Ctrl+Shift+D) + meeting (Ctrl+Shift+M)'
+        $lnk.Save()
+    }
 }
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
