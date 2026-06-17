@@ -9,6 +9,9 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 
 > Named *Diktatorn* — Swedish for "the dictator" — because it rules your words with an iron hand. 😄
 
+> 📖 **End users:** see the [Användarmanual (Swedish)](Anvandarmanual.md) for a step-by-step guide,
+> including how to get a free Groq cloud API key.
+
 ## Features
 
 - **Dictation → typed at the cursor**, in any app:
