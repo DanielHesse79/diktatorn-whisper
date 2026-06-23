@@ -19,6 +19,7 @@ $language  = 'sv'
 $outDir    = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'Transcriptions'
 $tmpDict   = Join-Path $env:TEMP 'whisprflow_dict.wav'
 $tmpMeet   = Join-Path $env:TEMP 'whisprflow_meeting.wav'
+$tmpMeetClean = Join-Path $env:TEMP 'whisprflow_meeting_16k.wav'
 $micCfg    = Join-Path $root 'diktatorn-mic.txt'   # remembers which microphone to use
 $preferMic = 'USB PnP Sound Device'                # default mic (substring match), not the room/camera
 $backendCfg = Join-Path $root 'diktatorn-backend.txt'   # 'local' or 'groq'
@@ -144,6 +145,42 @@ public class MicRecorder {
 "@
 Add-Type -TypeDefinition $csRec -ReferencedAssemblies $naudioDll
 
+# --- Native: audio cleanup (16 kHz mono + drop long silences that make Whisper loop) ---
+$csPrep = @"
+using System;
+using System.Collections.Generic;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+public static class AudioPrep {
+    public static void Clean(string inPath, string outPath) {
+        using (var reader = new AudioFileReader(inPath)) {
+            ISampleProvider sp = reader;
+            if (sp.WaveFormat.Channels == 2) sp = new StereoToMonoSampleProvider(sp) { LeftVolume = 0.5f, RightVolume = 0.5f };
+            var rs = new WdlResamplingSampleProvider(sp, 16000);
+            float thr = 0.0075f;        // ~ -42 dB: below this counts as silence
+            int maxSilent = 16000;      // keep at most ~1 s of contiguous near-silence
+            float[] buf = new float[16000];
+            int read; int silent = 0;
+            using (var writer = new WaveFileWriter(outPath, new WaveFormat(16000, 16, 1))) {
+                while ((read = rs.Read(buf, 0, buf.Length)) > 0) {
+                    var keep = new List<short>(read);
+                    for (int i = 0; i < read; i++) {
+                        float s = buf[i];
+                        if (Math.Abs(s) < thr) { silent++; if (silent > maxSilent) continue; }
+                        else silent = 0;
+                        int v = (int)(s * 32767f);
+                        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+                        keep.Add((short)v);
+                    }
+                    if (keep.Count > 0) writer.WriteSamples(keep.ToArray(), 0, keep.Count);
+                }
+            }
+        }
+    }
+}
+"@
+Add-Type -TypeDefinition $csPrep -ReferencedAssemblies $naudioDll
+
 # --- Native: Groq cloud transcription (OpenAI-compatible /audio/transcriptions) ---
 $csCloud = @"
 using System;
@@ -152,10 +189,10 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 public static class Cloud {
-    public static string Transcribe(string apiKey, string path, string model, string language) {
+    static string Post(string apiKey, string path, string model, string language, string responseFormat) {
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
         using (var client = new HttpClient()) {
-            client.Timeout = TimeSpan.FromSeconds(60);
+            client.Timeout = TimeSpan.FromSeconds(180);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             using (var form = new MultipartFormDataContent()) {
                 var file = new ByteArrayContent(File.ReadAllBytes(path));
@@ -163,13 +200,21 @@ public static class Cloud {
                 form.Add(file, "file", "audio.wav");
                 form.Add(new StringContent(model), "model");
                 if (!string.IsNullOrEmpty(language)) form.Add(new StringContent(language), "language");
-                form.Add(new StringContent("text"), "response_format");
+                form.Add(new StringContent(responseFormat), "response_format");
                 var resp = client.PostAsync("https://api.groq.com/openai/v1/audio/transcriptions", form).Result;
                 string body = resp.Content.ReadAsStringAsync().Result;
                 if (!resp.IsSuccessStatusCode) throw new Exception("Groq HTTP " + (int)resp.StatusCode + ": " + body);
                 return body.Trim();
             }
         }
+    }
+    // Plain text (dictation).
+    public static string Transcribe(string apiKey, string path, string model, string language) {
+        return Post(apiKey, path, model, language, "text");
+    }
+    // JSON with per-segment timestamps (meetings).
+    public static string TranscribeVerbose(string apiKey, string path, string model, string language) {
+        return Post(apiKey, path, model, language, "verbose_json");
     }
 }
 "@
@@ -397,14 +442,27 @@ function Stop-Meeting {
         if ((-not (Test-Path $tmpMeet)) -or ((Get-Item $tmpMeet).Length -lt 2048)) {
             $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades (spelades nagot upp?).', 'Warning'); return
         }
+        # Clean the audio first: 16 kHz mono + drop long silences (prevents Whisper repetition loops).
+        $src = $tmpMeet
+        try {
+            [AudioPrep]::Clean($tmpMeet, $tmpMeetClean)
+            if ((Test-Path $tmpMeetClean) -and ((Get-Item $tmpMeetClean).Length -gt 2048)) { $src = $tmpMeetClean }
+        } catch {}
         $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
         $outFile = Join-Path $outDir "Mote_$stamp.txt"
         if ($script:backend -eq 'groq') {
-            $text = Get-TranscriptText $tmpMeet
-            if (-not $text) { return }
-            [System.IO.File]::WriteAllText($outFile, $text, [System.Text.UTF8Encoding]::new($true))
+            $key = Get-GroqKey
+            if (-not $key) { $tray.ShowBalloonTip(4000, 'Diktatorn', 'Ingen Groq-nyckel angiven.', 'Warning'); return }
+            $json = [Cloud]::TranscribeVerbose($key, $src, $groqModel, $language)
+            $obj = $json | ConvertFrom-Json
+            if ($obj.segments) {
+                $lines = $obj.segments | ForEach-Object { '[{0}] {1}' -f ([TimeSpan]::FromSeconds([double]$_.start).ToString('hh\:mm\:ss')), ($_.text).Trim() }
+                [System.IO.File]::WriteAllText($outFile, ($lines -join "`r`n"), [System.Text.UTF8Encoding]::new($true))
+            } elseif ($obj.text) {
+                [System.IO.File]::WriteAllText($outFile, $obj.text.Trim(), [System.Text.UTF8Encoding]::new($true))
+            } else { return }
         } else {
-            $seg = Get-Transcript $tmpMeet
+            $seg = Get-Transcript $src
             if (-not $seg) { $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades.', 'Warning'); return }
             $seg | Export-Text -path $outFile -timestamps
         }
