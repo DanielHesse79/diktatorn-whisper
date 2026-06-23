@@ -364,9 +364,11 @@ $tray.ContextMenuStrip = $menu
 function Set-Status([string]$txt, $icon) { $tray.Text = ('Diktatorn - ' + $txt); $tray.Icon = $icon }
 
 # --- Shared transcription ---
-function Get-Transcript([string]$wav) {
+# $lang = '' (or $null) means auto-detect (WhisperPS auto-detects when -language is omitted).
+function Get-Transcript([string]$wav, [string]$lang = $language) {
     if (-not (Test-Path $wav) -or (Get-Item $wav).Length -lt 2048) { return $null }
-    Transcribe-File -model $script:model -path $wav -language $language
+    if ($lang) { Transcribe-File -model $script:model -path $wav -language $lang }
+    else { Transcribe-File -model $script:model -path $wav }
 }
 # Returns plain transcript text, dispatching to the selected backend.
 function Get-TranscriptText([string]$wav) {
@@ -453,7 +455,7 @@ function Stop-Meeting {
         if ($script:backend -eq 'groq') {
             $key = Get-GroqKey
             if (-not $key) { $tray.ShowBalloonTip(4000, 'Diktatorn', 'Ingen Groq-nyckel angiven.', 'Warning'); return }
-            $json = [Cloud]::TranscribeVerbose($key, $src, $groqModel, $language)
+            $json = [Cloud]::TranscribeVerbose($key, $src, $groqModel, '')   # '' = auto-detect (sv/en)
             $obj = $json | ConvertFrom-Json
             if ($obj.segments) {
                 $lines = $obj.segments | ForEach-Object { '[{0}] {1}' -f ([TimeSpan]::FromSeconds([double]$_.start).ToString('hh\:mm\:ss')), ($_.text).Trim() }
@@ -462,7 +464,7 @@ function Stop-Meeting {
                 [System.IO.File]::WriteAllText($outFile, $obj.text.Trim(), [System.Text.UTF8Encoding]::new($true))
             } else { return }
         } else {
-            $seg = Get-Transcript $src
+            $seg = Get-Transcript $src ''   # '' = auto-detect (sv/en)
             if (-not $seg) { $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades.', 'Warning'); return }
             $seg | Export-Text -path $outFile -timestamps
         }
