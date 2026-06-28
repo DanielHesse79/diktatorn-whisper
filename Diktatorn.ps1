@@ -18,8 +18,10 @@ $adapter   = $null   # GPU adapter, auto-detected after the WhisperPS module loa
 $language  = 'sv'
 $outDir    = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'Transcriptions'
 $tmpDict   = Join-Path $env:TEMP 'whisprflow_dict.wav'
-$tmpMeet   = Join-Path $env:TEMP 'whisprflow_meeting.wav'
-$tmpMeetClean = Join-Path $env:TEMP 'whisprflow_meeting_16k.wav'
+$tmpMeet   = Join-Path $env:TEMP 'whisprflow_meeting.wav'        # system audio (loopback)
+$tmpMeetMic = Join-Path $env:TEMP 'whisprflow_meeting_mic.wav'   # your mic
+$tmpMeetMixed = Join-Path $env:TEMP 'whisprflow_meeting_mix.wav' # mixed
+$tmpMeetClean = Join-Path $env:TEMP 'whisprflow_meeting_16k.wav' # cleaned -> transcribed
 $micCfg    = Join-Path $root 'diktatorn-mic.txt'   # remembers which microphone to use
 $preferMic = 'USB PnP Sound Device'                # default mic (substring match), not the room/camera
 $backendCfg = Join-Path $root 'diktatorn-backend.txt'   # 'local' or 'groq'
@@ -99,25 +101,46 @@ using System;
 using System.Threading;
 using NAudio.Wave;
 public class MeetingRecorder {
-    WasapiLoopbackCapture cap;
-    WaveFileWriter writer;
-    ManualResetEvent stopped = new ManualResetEvent(false);
-    public void Start(string path) {
+    // Captures BOTH system audio (loopback = remote participants) and the mic (you), to two files.
+    WasapiLoopbackCapture sys;
+    WaveInEvent mic;
+    WaveFileWriter sysW, micW;
+    ManualResetEvent sysStopped = new ManualResetEvent(false);
+    ManualResetEvent micStopped = new ManualResetEvent(false);
+    bool micOn = false;
+    public bool MicCaptured { get { return micOn; } }
+    public void Start(string sysPath, string micPath, int micDevice) {
         var prev = SynchronizationContext.Current;
-        SynchronizationContext.SetSynchronizationContext(null);   // raise events on a bg thread, not the blocked UI thread
-        cap = new WasapiLoopbackCapture();
+        SynchronizationContext.SetSynchronizationContext(null);   // events on a bg thread, not the blocked UI thread
+        sys = new WasapiLoopbackCapture();
+        mic = new WaveInEvent();
         SynchronizationContext.SetSynchronizationContext(prev);
-        writer = new WaveFileWriter(path, cap.WaveFormat);
-        cap.DataAvailable += (s, e) => { if (writer != null) writer.Write(e.Buffer, 0, e.BytesRecorded); };
-        cap.RecordingStopped += (s, e) => {
-            if (writer != null) { writer.Dispose(); writer = null; }
-            if (cap != null) cap.Dispose();
-            stopped.Set();
-        };
-        stopped.Reset();
-        cap.StartRecording();
+        sysW = new WaveFileWriter(sysPath, sys.WaveFormat);
+        sys.DataAvailable += (s, e) => { if (sysW != null) sysW.Write(e.Buffer, 0, e.BytesRecorded); };
+        sys.RecordingStopped += (s, e) => { if (sysW != null) { sysW.Dispose(); sysW = null; } sys.Dispose(); sysStopped.Set(); };
+        sysStopped.Reset();
+        sys.StartRecording();
+        // Mic is best-effort: if it can't open, we still get system audio.
+        try {
+            mic.DeviceNumber = micDevice;
+            mic.WaveFormat = new WaveFormat(16000, 16, 1);
+            micW = new WaveFileWriter(micPath, mic.WaveFormat);
+            mic.DataAvailable += (s, e) => { if (micW != null) micW.Write(e.Buffer, 0, e.BytesRecorded); };
+            mic.RecordingStopped += (s, e) => { if (micW != null) { micW.Dispose(); micW = null; } mic.Dispose(); micStopped.Set(); };
+            micStopped.Reset();
+            mic.StartRecording();
+            micOn = true;
+        } catch {
+            micOn = false;
+            if (micW != null) { micW.Dispose(); micW = null; }
+        }
     }
-    public void Stop() { if (cap != null) { cap.StopRecording(); stopped.WaitOne(5000); } }
+    public void Stop() {
+        if (sys != null) sys.StopRecording();
+        if (micOn && mic != null) mic.StopRecording();
+        sysStopped.WaitOne(5000);
+        if (micOn) micStopped.WaitOne(5000);
+    }
 }
 public class MicRecorder {
     WaveInEvent wi;
@@ -173,6 +196,38 @@ public static class AudioPrep {
                         keep.Add((short)v);
                     }
                     if (keep.Count > 0) writer.WriteSamples(keep.ToArray(), 0, keep.Count);
+                }
+            }
+        }
+    }
+}
+public static class AudioMix {
+    static ISampleProvider Mono16k(AudioFileReader r) {
+        ISampleProvider sp = r;
+        if (sp.WaveFormat.Channels == 2) sp = new StereoToMonoSampleProvider(sp) { LeftVolume = 0.5f, RightVolume = 0.5f };
+        return new WdlResamplingSampleProvider(sp, 16000);
+    }
+    // Mix two recordings (system + mic) into one 16 kHz mono file. Streams, so memory stays low.
+    public static void Mix(string aPath, string bPath, string outPath) {
+        using (var ar = new AudioFileReader(aPath))
+        using (var br = new AudioFileReader(bPath)) {
+            var a = Mono16k(ar); var b = Mono16k(br);
+            float[] ba = new float[16000], bb = new float[16000];
+            using (var w = new WaveFileWriter(outPath, new WaveFormat(16000, 16, 1))) {
+                while (true) {
+                    int ra = a.Read(ba, 0, ba.Length);
+                    int rb = b.Read(bb, 0, bb.Length);
+                    int n = Math.Max(ra, rb);
+                    if (n == 0) break;
+                    var outBuf = new short[n];
+                    for (int i = 0; i < n; i++) {
+                        float s = 0f;
+                        if (i < ra) s += ba[i];
+                        if (i < rb) s += bb[i];
+                        if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
+                        outBuf[i] = (short)(s * 32767f);
+                    }
+                    w.WriteSamples(outBuf, 0, n);
                 }
             }
         }
@@ -429,10 +484,10 @@ function Start-Meeting {
     if ($script:dictating) { return }
     $script:meeting = $true
     $miMeeting.Text = 'Stoppa motesinspelning (Ctrl+Shift+M)'
-    Set-Status 'SPELAR IN MOTE (datorljud)...' $icoMeet
-    Remove-Item $tmpMeet -ErrorAction SilentlyContinue
-    $script:meetRec.Start($tmpMeet)
-    $tray.ShowBalloonTip(2500, 'Diktatorn', 'Motesinspelning startad (datorljud).', 'Info')
+    Set-Status 'SPELAR IN MOTE (datorljud + mick)...' $icoMeet
+    Remove-Item $tmpMeet, $tmpMeetMic, $tmpMeetMixed -ErrorAction SilentlyContinue
+    $script:meetRec.Start($tmpMeet, $tmpMeetMic, $script:micDevice)
+    $tray.ShowBalloonTip(2500, 'Diktatorn', 'Motesinspelning startad (datorljud + din mick).', 'Info')
 }
 function Stop-Meeting {
     $script:meeting = $false
@@ -441,15 +496,20 @@ function Stop-Meeting {
     $script:meetRec.Stop()
     [System.Windows.Forms.Application]::DoEvents()
     try {
-        if ((-not (Test-Path $tmpMeet)) -or ((Get-Item $tmpMeet).Length -lt 2048)) {
-            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades (spelades nagot upp?).', 'Warning'); return
+        $sysOk = (Test-Path $tmpMeet) -and ((Get-Item $tmpMeet).Length -gt 2048)
+        $micOk = $script:meetRec.MicCaptured -and (Test-Path $tmpMeetMic) -and ((Get-Item $tmpMeetMic).Length -gt 2048)
+        if (-not $sysOk -and -not $micOk) {
+            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades.', 'Warning'); return
         }
-        # Clean the audio first: 16 kHz mono + drop long silences (prevents Whisper repetition loops).
+        # Combine mic (you) + system (others), then clean: 16 kHz mono + drop long silences.
         $src = $tmpMeet
         try {
-            [AudioPrep]::Clean($tmpMeet, $tmpMeetClean)
-            if ((Test-Path $tmpMeetClean) -and ((Get-Item $tmpMeetClean).Length -gt 2048)) { $src = $tmpMeetClean }
-        } catch {}
+            if ($sysOk -and $micOk) { [AudioMix]::Mix($tmpMeet, $tmpMeetMic, $tmpMeetMixed); $combined = $tmpMeetMixed }
+            elseif ($micOk) { $combined = $tmpMeetMic }
+            else { $combined = $tmpMeet }
+            [AudioPrep]::Clean($combined, $tmpMeetClean)
+            $src = if ((Test-Path $tmpMeetClean) -and ((Get-Item $tmpMeetClean).Length -gt 2048)) { $tmpMeetClean } else { $combined }
+        } catch { $src = $tmpMeet }
         $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
         $outFile = Join-Path $outDir "Mote_$stamp.txt"
         if ($script:backend -eq 'groq') {
