@@ -3,31 +3,41 @@
 #   DICTATION (types text at the cursor in any app):
 #     * Hold Ctrl+Shift  (push-to-talk): speak, release -> text is typed.
 #     * Ctrl+Shift+D     (toggle):       press to start, press again to stop.
-#   MEETING (captures system/computer audio = remote participants):
+#   MEETING (records system audio = the others, and your mic = you):
 #     * Ctrl+Shift+M  or tray menu: start; press again to stop.
-#       Records the whole meeting, transcribes on stop, saves + opens a transcript.
+#       Continuous: both streams are rotated into 30 s chunks that are transcribed
+#       DURING the meeting with speaker labels (Du = mic, Ovriga = system audio).
+#       The transcript file grows live; talk-time stats are appended at the end.
 #
 # Runs in the system tray. No window steals focus, so dictated text lands in the active app.
 
 $ErrorActionPreference = 'Stop'
+
+# --- Single instance: a second copy would fight over the global hotkeys ---
+try {
+    $script:singleton = New-Object System.Threading.Mutex($false, 'DiktatornSingleton')
+    if (-not $script:singleton.WaitOne(0)) { exit }
+} catch [System.Threading.AbandonedMutexException] { }   # previous instance died holding it: we own it now
+
 $root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $modulePsd = Join-Path $root 'WhisperPS\WhisperPS\WhisperPS.psd1'
-$modelPath = Join-Path $root 'Models\ggml-medium.bin'
 $naudioDll = Join-Path $root 'lib\NAudio.dll'
 $adapter   = $null   # GPU adapter, auto-detected after the WhisperPS module loads
-$language  = 'sv'
+$language  = 'sv'    # dictation language (meetings auto-detect)
+$chunkSec  = if ($env:DIKTATORN_CHUNK_SEC) { [int]$env:DIKTATORN_CHUNK_SEC } else { 30 }   # meeting chunk length (30 s = Whisper's native window)
 $outDir    = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'Transcriptions'
 $tmpDict   = Join-Path $env:TEMP 'whisprflow_dict.wav'
-$tmpMeet   = Join-Path $env:TEMP 'whisprflow_meeting.wav'        # system audio (loopback)
-$tmpMeetMic = Join-Path $env:TEMP 'whisprflow_meeting_mic.wav'   # your mic
-$tmpMeetMixed = Join-Path $env:TEMP 'whisprflow_meeting_mix.wav' # mixed
-$tmpMeetClean = Join-Path $env:TEMP 'whisprflow_meeting_16k.wav' # cleaned -> transcribed
+$logFile   = Join-Path $env:TEMP 'diktatorn.log'
 $micCfg    = Join-Path $root 'diktatorn-mic.txt'   # remembers which microphone to use
 $preferMic = 'USB PnP Sound Device'                # default mic (substring match), not the room/camera
 $backendCfg = Join-Path $root 'diktatorn-backend.txt'   # 'local' or 'groq'
 $groqKeyFile = Join-Path $root 'diktatorn-groq.txt'     # Groq API key (plaintext, local only)
 $groqModel  = 'whisper-large-v3-turbo'
 New-Item -ItemType Directory -Force $outDir | Out-Null
+
+function Write-Log([string]$msg) {
+    try { Add-Content -Path $logFile -Value ('{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg) } catch {}
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -101,52 +111,105 @@ using System;
 using System.Threading;
 using NAudio.Wave;
 public class MeetingRecorder {
-    // Captures BOTH system audio (loopback = remote participants) and the mic (you), to two files.
+    // Records system audio (loopback = the others) and the mic (you) as SEPARATE streams,
+    // rotated into chunk files (chunk_NNNN_sys.wav / chunk_NNNN_mic.wav). Separate streams =
+    // we know who spoke: mic = you, loopback = everyone else. Rotation runs on the recorder's
+    // OWN threadpool timer (not the UI thread), so chunk i always covers wall-time
+    // [i*chunkSec, (i+1)*chunkSec) with exact timestamps even if PS-side transcription lags
+    // or loopback goes silent. Every writer touch is exception-guarded; a stream dying
+    // mid-meeting sets a *Faulted flag the PS side can surface instead of failing silently.
     WasapiLoopbackCapture sys;
     WaveInEvent mic;
     WaveFileWriter sysW, micW;
+    readonly object sysLock = new object();
+    readonly object micLock = new object();
     ManualResetEvent sysStopped = new ManualResetEvent(false);
     ManualResetEvent micStopped = new ManualResetEvent(false);
-    bool micOn = false;
+    Timer rotator;
+    string dir;
+    int index = 0;
+    int chunkMs;
+    volatile bool micOn = false, running = false, sysFaulted = false, micFaulted = false;
     public bool MicCaptured { get { return micOn; } }
-    public void Start(string sysPath, string micPath, int micDevice) {
+    public bool SysFaulted { get { return sysFaulted; } }
+    public bool MicFaulted { get { return micFaulted; } }
+    public int ChunkIndex { get { lock (sysLock) { return index; } } }   // chunks 0..index-1 final; after Stop(), chunk `index` too
+    string SysPath(int i) { return System.IO.Path.Combine(dir, "chunk_" + i.ToString("D4") + "_sys.wav"); }
+    string MicPath(int i) { return System.IO.Path.Combine(dir, "chunk_" + i.ToString("D4") + "_mic.wav"); }
+    static void SafeDispose(WaveFileWriter w) { if (w != null) { try { w.Dispose(); } catch { } } }
+
+    public void Start(string chunkDir, int micDevice, int chunkSeconds) {
+        dir = chunkDir; index = 0; chunkMs = chunkSeconds * 1000; running = true;
+        sysFaulted = false; micFaulted = false;
         var prev = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(null);   // events on a bg thread, not the blocked UI thread
         sys = new WasapiLoopbackCapture();
         mic = new WaveInEvent();
         SynchronizationContext.SetSynchronizationContext(prev);
-        sysW = new WaveFileWriter(sysPath, sys.WaveFormat);
-        sys.DataAvailable += (s, e) => { if (sysW != null) sysW.Write(e.Buffer, 0, e.BytesRecorded); };
-        sys.RecordingStopped += (s, e) => { if (sysW != null) { sysW.Dispose(); sysW = null; } sys.Dispose(); sysStopped.Set(); };
+        sysW = new WaveFileWriter(SysPath(0), sys.WaveFormat);
+        sys.DataAvailable += (s, e) => { lock (sysLock) { if (sysW != null) { try { sysW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } };
+        sys.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) sysFaulted = true; lock (sysLock) { SafeDispose(sysW); sysW = null; } try { sys.Dispose(); } catch { } sysStopped.Set(); };
         sysStopped.Reset();
         sys.StartRecording();
-        // Mic is best-effort: if it can't open, we still get system audio.
+        // Mic is best-effort: if it can't open we still get system audio.
         try {
             mic.DeviceNumber = micDevice;
             mic.WaveFormat = new WaveFormat(16000, 16, 1);
-            micW = new WaveFileWriter(micPath, mic.WaveFormat);
-            mic.DataAvailable += (s, e) => { if (micW != null) micW.Write(e.Buffer, 0, e.BytesRecorded); };
-            mic.RecordingStopped += (s, e) => { if (micW != null) { micW.Dispose(); micW = null; } mic.Dispose(); micStopped.Set(); };
+            micW = new WaveFileWriter(MicPath(0), mic.WaveFormat);
+            mic.DataAvailable += (s, e) => { lock (micLock) { if (micW != null) { try { micW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } };
+            mic.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) micFaulted = true; lock (micLock) { SafeDispose(micW); micW = null; } try { mic.Dispose(); } catch { } micStopped.Set(); };
             micStopped.Reset();
             mic.StartRecording();
             micOn = true;
         } catch {
-            micOn = false;
-            if (micW != null) { micW.Dispose(); micW = null; }
+            micOn = false; micFaulted = true;
+            lock (micLock) { SafeDispose(micW); micW = null; }
+            micStopped.Set();
         }
+        rotator = new Timer(delegate { Rotate(); }, null, chunkMs, chunkMs);
     }
+
+    void Rotate() {
+        if (!running) return;
+        int next;
+        lock (sysLock) {
+            if (!running) return;
+            next = index + 1;
+            SafeDispose(sysW); sysW = null;                       // finalize the just-closed chunk
+            try { sysW = new WaveFileWriter(SysPath(next), sys.WaveFormat); } catch { sysFaulted = true; }
+        }
+        if (micOn) {
+            lock (micLock) {
+                SafeDispose(micW); micW = null;
+                try { micW = new WaveFileWriter(MicPath(next), mic.WaveFormat); } catch { micFaulted = true; }
+            }
+        }
+        lock (sysLock) { index = next; }                         // publish only after both writers rotated
+    }
+
     public void Stop() {
-        if (sys != null) sys.StopRecording();
-        if (micOn && mic != null) mic.StopRecording();
+        running = false;
+        if (rotator != null) {
+            var wh = new ManualResetEvent(false);
+            try { rotator.Dispose(wh); wh.WaitOne(2000); } catch { }   // wait out any in-flight Rotate
+            rotator = null;
+        }
+        try { if (sys != null) sys.StopRecording(); } catch { }
+        try { if (micOn && mic != null) mic.StopRecording(); } catch { }
         sysStopped.WaitOne(5000);
         if (micOn) micStopped.WaitOne(5000);
+        // Finalize the last chunk's writers in case RecordingStopped already fired (spontaneous death) or never runs.
+        lock (sysLock) { SafeDispose(sysW); sysW = null; }
+        lock (micLock) { SafeDispose(micW); micW = null; }
     }
 }
 public class MicRecorder {
     WaveInEvent wi;
     WaveFileWriter writer;
+    readonly object wLock = new object();
     ManualResetEvent stopped = new ManualResetEvent(false);
-    public void Start(string path, int deviceNumber) {
+    // Returns false if the device could not be opened (leaves nothing leaked/locked).
+    public bool Start(string path, int deviceNumber) {
         var prev = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(null);   // raise events on a bg thread, not the blocked UI thread
         wi = new WaveInEvent();
@@ -154,16 +217,22 @@ public class MicRecorder {
         wi.DeviceNumber = deviceNumber;                 // pick the exact mic, not the room/camera
         wi.WaveFormat = new WaveFormat(16000, 16, 1);   // exactly what Whisper wants
         writer = new WaveFileWriter(path, wi.WaveFormat);
-        wi.DataAvailable += (s, e) => { if (writer != null) writer.Write(e.Buffer, 0, e.BytesRecorded); };
-        wi.RecordingStopped += (s, e) => {
-            if (writer != null) { writer.Dispose(); writer = null; }
-            if (wi != null) wi.Dispose();
-            stopped.Set();
-        };
+        wi.DataAvailable += (s, e) => { lock (wLock) { if (writer != null) { try { writer.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } };
+        wi.RecordingStopped += (s, e) => { lock (wLock) { if (writer != null) { try { writer.Dispose(); } catch { } writer = null; } } if (wi != null) wi.Dispose(); stopped.Set(); };
         stopped.Reset();
-        wi.StartRecording();
+        try {
+            wi.StartRecording();
+            return true;
+        } catch {
+            // StartRecording threw (bad/busy device): dispose the open writer so the temp file isn't left locked.
+            lock (wLock) { if (writer != null) { try { writer.Dispose(); } catch { } writer = null; } }
+            try { wi.Dispose(); } catch { }
+            wi = null;
+            stopped.Set();
+            return false;
+        }
     }
-    public void Stop() { if (wi != null) { wi.StopRecording(); stopped.WaitOne(5000); } }
+    public void Stop() { if (wi != null) { try { wi.StopRecording(); } catch { } stopped.WaitOne(5000); } }
 }
 "@
 Add-Type -TypeDefinition $csRec -ReferencedAssemblies $naudioDll
@@ -196,38 +265,6 @@ public static class AudioPrep {
                         keep.Add((short)v);
                     }
                     if (keep.Count > 0) writer.WriteSamples(keep.ToArray(), 0, keep.Count);
-                }
-            }
-        }
-    }
-}
-public static class AudioMix {
-    static ISampleProvider Mono16k(AudioFileReader r) {
-        ISampleProvider sp = r;
-        if (sp.WaveFormat.Channels == 2) sp = new StereoToMonoSampleProvider(sp) { LeftVolume = 0.5f, RightVolume = 0.5f };
-        return new WdlResamplingSampleProvider(sp, 16000);
-    }
-    // Mix two recordings (system + mic) into one 16 kHz mono file. Streams, so memory stays low.
-    public static void Mix(string aPath, string bPath, string outPath) {
-        using (var ar = new AudioFileReader(aPath))
-        using (var br = new AudioFileReader(bPath)) {
-            var a = Mono16k(ar); var b = Mono16k(br);
-            float[] ba = new float[16000], bb = new float[16000];
-            using (var w = new WaveFileWriter(outPath, new WaveFormat(16000, 16, 1))) {
-                while (true) {
-                    int ra = a.Read(ba, 0, ba.Length);
-                    int rb = b.Read(bb, 0, bb.Length);
-                    int n = Math.Max(ra, rb);
-                    if (n == 0) break;
-                    var outBuf = new short[n];
-                    for (int i = 0; i < n; i++) {
-                        float s = 0f;
-                        if (i < ra) s += ba[i];
-                        if (i < rb) s += bb[i];
-                        if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
-                        outBuf[i] = (short)(s * 32767f);
-                    }
-                    w.WriteSamples(outBuf, 0, n);
                 }
             }
         }
@@ -370,6 +407,9 @@ $miInfo = $menu.Items.Add('Hall Ctrl+Shift = diktera  |  Ctrl+Shift+D = toggel')
 $miStats = $menu.Items.Add('Talhastighet: - '); $miStats.Enabled = $false
 [void]$menu.Items.Add('-')
 $miMeeting = $menu.Items.Add('Starta motesinspelning (Ctrl+Shift+M)')
+$miOpenLive = $menu.Items.Add('Visa transkript (live)')
+$miOpenLive.Enabled = $false
+$miOpenLive.add_Click({ if ($script:meetOutFile -and (Test-Path $script:meetOutFile)) { Invoke-Item $script:meetOutFile } })
 [void]$menu.Items.Add('-')
 $miMic = New-Object System.Windows.Forms.ToolStripMenuItem 'Mikrofon (diktering)'
 $script:micMenuItems = @()
@@ -456,10 +496,21 @@ function Update-Stats([string]$text, [double]$secs) {
 $script:dictating = $false
 $script:micRec = New-Object MicRecorder
 function Start-Dictation {
+    Remove-Item $tmpDict -ErrorAction SilentlyContinue
+    if (-not $script:micRec.Start($tmpDict, $script:micDevice)) {
+        Write-Log 'Start-Dictation: mic could not be opened'
+        $tray.ShowBalloonTip(3000, 'Diktatorn', 'Mikrofonen kunde inte oppnas. Valj en annan mick i menyn.', 'Warning')
+        return $false
+    }
     $script:dictating = $true
     Set-Status 'SPELAR IN (diktering)...' $icoRec
-    Remove-Item $tmpDict -ErrorAction SilentlyContinue
-    $script:micRec.Start($tmpDict, $script:micDevice)
+    return $true
+}
+function Cancel-Dictation {
+    # Abort an in-progress dictation without transcribing/typing (e.g. a stray PTT before a meeting).
+    $script:dictating = $false; $script:pttActive = $false
+    try { $script:micRec.Stop() } catch {}
+    Set-Status 'redo' $icoIdle
 }
 function Stop-Dictation {
     $script:dictating = $false
@@ -473,66 +524,180 @@ function Stop-Dictation {
             Start-Sleep -Milliseconds 40; [WfNative]::TypeText($text + ' ')
             Update-Stats $text $secs
         }
-    } catch { $tray.ShowBalloonTip(3000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error') }
+    } catch {
+        Write-Log "Stop-Dictation: $($_.Exception.Message)"
+        $tray.ShowBalloonTip(3000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error')
+    }
     finally { Set-Status 'redo' $icoIdle }
 }
 
-# --- Meeting (system audio via WASAPI loopback) ---
+# --- Meeting: chunked dual-stream -> continuous labeled transcript + talk-time stats ---
+# Mic chunks = you ("Du"), loopback chunks = everyone else ("Ovriga"). No ML diarization
+# needed: the label IS the stream the audio came from.
 $script:meeting  = $false
-$script:meetRec  = New-Object MeetingRecorder
-function Start-Meeting {
-    if ($script:dictating) { return }
-    $script:meeting = $true
-    $miMeeting.Text = 'Stoppa motesinspelning (Ctrl+Shift+M)'
-    Set-Status 'SPELAR IN MOTE (datorljud + mick)...' $icoMeet
-    Remove-Item $tmpMeet, $tmpMeetMic, $tmpMeetMixed -ErrorAction SilentlyContinue
-    $script:meetRec.Start($tmpMeet, $tmpMeetMic, $script:micDevice)
-    $tray.ShowBalloonTip(2500, 'Diktatorn', 'Motesinspelning startad (datorljud + din mick).', 'Info')
+$script:meetRec  = $null
+$labelYou    = 'Du'
+$labelOthers = [string][char]214 + 'vriga'   # "Ovriga" with a proper capital O-umlaut in output
+
+# Transcribe one chunk file: clean -> silence/size gate -> backend -> text + voiced seconds.
+# Returns $null for a legitimately SILENT chunk (safe to drop). THROWS on a transcription
+# error (bad key, HTTP failure, native crash) so the caller keeps the audio for recovery.
+function Get-ChunkText([string]$wav) {
+    if (-not (Test-Path $wav) -or ((Get-Item $wav).Length -lt 8192)) { return $null }   # no/negligible audio
+    $clean = Join-Path $script:meetDir 'clean.wav'
+    [AudioPrep]::Clean($wav, $clean)                                                    # throws -> caller preserves audio
+    if (-not (Test-Path $clean) -or ((Get-Item $clean).Length -lt 16000)) { return $null }   # <0.5 s voiced = silence
+    $secs = Get-WavSeconds $clean
+    if ($script:backend -eq 'groq') {
+        $key = Get-GroqKey
+        if (-not $key) { throw 'Ingen Groq-nyckel' }
+        $text = ([Cloud]::Transcribe($key, $clean, $groqModel, '')).Trim()   # '' = auto-detect sv/en
+    } else {
+        $seg = Get-Transcript $clean ''
+        $text = ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
+    }
+    if (-not $text -or $text -match '^[\s\.\-\!\?]*$') { return $null }
+    @{ text = $text; secs = $secs }
 }
+
+# Process finished chunk pairs [meetProcessed, upTo): transcribe each stream independently,
+# label (Du/Ovriga), accumulate stats. A stream is deleted ONLY once transcribed or confirmed
+# silent; on a transcription error its audio is KEPT (meetFailed=$true) so nothing is lost.
+function Process-ReadyChunks([int]$upTo) {
+    while ($script:meetProcessed -lt $upTo) {
+        $i = $script:meetProcessed
+        $ts = [TimeSpan]::FromSeconds($i * $chunkSec).ToString('hh\:mm\:ss')
+        $any = $false
+        foreach ($stream in @(
+            @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_sys.wav' -f $i)); label = $labelOthers; you = $false },
+            @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_mic.wav' -f $i)); label = $labelYou;    you = $true  }
+        )) {
+            try {
+                $r = Get-ChunkText $stream.wav
+                if ($r) {
+                    $script:meetLines.Add("[$ts] $($stream.label): $($r.text)")
+                    if ($stream.you) { $script:meetSecsYou += $r.secs; $script:meetWordsYou += ($r.text -split '\s+').Count }
+                    else { $script:meetSecsOthers += $r.secs; $script:meetWordsOthers += ($r.text -split '\s+').Count }
+                    $any = $true
+                }
+                Remove-Item $stream.wav -ErrorAction SilentlyContinue   # transcribed or silent -> safe to drop
+            } catch {
+                $script:meetFailed = $true
+                Write-Log "chunk ${i} ($($stream.label)): $($_.Exception.Message)"   # keep the audio (not deleted)
+            }
+        }
+        $script:meetProcessed++
+        if ($any) { Save-LiveTranscript }
+    }
+}
+
+function Save-LiveTranscript([switch]$final) {
+    $body = New-Object 'System.Collections.Generic.List[string]'
+    $body.Add("Mote $($script:meetStamp)  (${labelYou} = din mikrofon, ${labelOthers} = datorljudet)")
+    $body.Add('=' * 60)
+    foreach ($l in $script:meetLines) { $body.Add($l) }
+    if ($final) {
+        $totalMin = [math]::Round((New-TimeSpan -Start $script:meetStart -End (Get-Date)).TotalMinutes)
+        $vy = $script:meetSecsYou; $vo = $script:meetSecsOthers; $tot = $vy + $vo
+        if ($tot -gt 0) {
+            $py = [math]::Round(100 * $vy / $tot); $po = 100 - $py
+            $body.Add(''); $body.Add('-' * 60)
+            $body.Add("Talfordelning: ${labelYou} $([math]::Round($vy/60,1)) min ($py%)  |  ${labelOthers} $([math]::Round($vo/60,1)) min ($po%)")
+            $body.Add("Ord: ${labelYou} $($script:meetWordsYou)  |  ${labelOthers} $($script:meetWordsOthers)")
+            $body.Add("Motets langd: $totalMin min")
+        }
+        if ($script:meetFailed) { $body.Add(''); $body.Add("OBS: delar kunde inte transkriberas - orort ljud finns kvar i: $($script:meetDir)") }
+        if ($script:meetRec -and ($script:meetRec.SysFaulted -or $script:meetRec.MicFaulted)) {
+            $body.Add("OBS: en ljudstrom avbrots under motet (enhet urkopplad?) - delar kan saknas.")
+        }
+    }
+    try { [System.IO.File]::WriteAllText($script:meetOutFile, (($body -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($true)) }
+    catch { Write-Log "Save-LiveTranscript: $($_.Exception.Message)" }
+}
+
+function Start-Meeting {
+    if ($script:meeting) { return }
+    if ($script:dictating) { Cancel-Dictation }   # a slow Ctrl+Shift+M chord can arm PTT dictation; drop it
+    try {
+        $script:meetDir = Join-Path $env:TEMP ('diktatorn_meet_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        New-Item -ItemType Directory -Force $script:meetDir | Out-Null
+        $script:meetLines = New-Object 'System.Collections.Generic.List[string]'
+        $script:meetProcessed = 0; $script:meetBusy = $false; $script:meetFailed = $false
+        $script:meetSecsYou = 0.0; $script:meetSecsOthers = 0.0
+        $script:meetWordsYou = 0;  $script:meetWordsOthers = 0
+        $script:meetStart = Get-Date
+        $script:meetStamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $script:meetOutFile = Join-Path $outDir ('Mote_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.txt')
+        $script:meetRec = New-Object MeetingRecorder
+        $script:meetRec.Start($script:meetDir, $script:micDevice, $chunkSec)   # rotation runs inside the recorder
+        $script:meeting = $true
+        Save-LiveTranscript
+        $meetTimer.Start()
+        $miMeeting.Text = 'Stoppa motesinspelning (Ctrl+Shift+M)'
+        $miOpenLive.Enabled = $true
+        Set-Status 'SPELAR IN MOTE (live)...' $icoMeet
+        $tray.ShowBalloonTip(2500, 'Diktatorn', 'Motesinspelning startad. Transkriptet vaxer live - se menyn.', 'Info')
+    } catch {
+        $script:meeting = $false
+        try { $meetTimer.Stop() } catch {}
+        try { if ($script:meetRec) { $script:meetRec.Stop() } } catch {}
+        Write-Log "Start-Meeting: $($_.Exception.Message)"
+        $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte starta motesinspelning: $($_.Exception.Message)", 'Error')
+        Set-Status 'redo' $icoIdle
+        Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Stop-Meeting {
+    if (-not $script:meeting) { return }
     $script:meeting = $false
+    $meetTimer.Stop()
     $miMeeting.Text = 'Starta motesinspelning (Ctrl+Shift+M)'
+    $miOpenLive.Enabled = $false
     Set-Status 'transkriberar mote...' $icoWork
-    $script:meetRec.Stop()
     [System.Windows.Forms.Application]::DoEvents()
     try {
-        $sysOk = (Test-Path $tmpMeet) -and ((Get-Item $tmpMeet).Length -gt 2048)
-        $micOk = $script:meetRec.MicCaptured -and (Test-Path $tmpMeetMic) -and ((Get-Item $tmpMeetMic).Length -gt 2048)
-        if (-not $sysOk -and -not $micOk) {
-            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades.', 'Warning'); return
+        $script:meetRec.Stop()
+        Process-ReadyChunks ($script:meetRec.ChunkIndex + 1)   # remaining chunks incl. the final partial one
+        if (($script:meetLines.Count -eq 0) -and -not $script:meetFailed) {
+            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget tal fangades under motet.', 'Warning')
+            Remove-Item $script:meetOutFile -ErrorAction SilentlyContinue
+            Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
+            return
         }
-        # Combine mic (you) + system (others), then clean: 16 kHz mono + drop long silences.
-        $src = $tmpMeet
-        try {
-            if ($sysOk -and $micOk) { [AudioMix]::Mix($tmpMeet, $tmpMeetMic, $tmpMeetMixed); $combined = $tmpMeetMixed }
-            elseif ($micOk) { $combined = $tmpMeetMic }
-            else { $combined = $tmpMeet }
-            [AudioPrep]::Clean($combined, $tmpMeetClean)
-            $src = if ((Test-Path $tmpMeetClean) -and ((Get-Item $tmpMeetClean).Length -gt 2048)) { $tmpMeetClean } else { $combined }
-        } catch { $src = $tmpMeet }
-        $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
-        $outFile = Join-Path $outDir "Mote_$stamp.txt"
-        if ($script:backend -eq 'groq') {
-            $key = Get-GroqKey
-            if (-not $key) { $tray.ShowBalloonTip(4000, 'Diktatorn', 'Ingen Groq-nyckel angiven.', 'Warning'); return }
-            $json = [Cloud]::TranscribeVerbose($key, $src, $groqModel, '')   # '' = auto-detect (sv/en)
-            $obj = $json | ConvertFrom-Json
-            if ($obj.segments) {
-                $lines = $obj.segments | ForEach-Object { '[{0}] {1}' -f ([TimeSpan]::FromSeconds([double]$_.start).ToString('hh\:mm\:ss')), ($_.text).Trim() }
-                [System.IO.File]::WriteAllText($outFile, ($lines -join "`r`n"), [System.Text.UTF8Encoding]::new($true))
-            } elseif ($obj.text) {
-                [System.IO.File]::WriteAllText($outFile, $obj.text.Trim(), [System.Text.UTF8Encoding]::new($true))
-            } else { return }
+        Save-LiveTranscript -final
+        if ($script:meetFailed) {
+            $tray.ShowBalloonTip(6000, 'Diktatorn', 'Mote delvis transkriberat. Orort ljud sparat i temp (se slutet av filen).', 'Warning')
+            # KEEP $meetDir: it holds the chunk audio that failed to transcribe
         } else {
-            $seg = Get-Transcript $src ''   # '' = auto-detect (sv/en)
-            if (-not $seg) { $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget ljud fangades.', 'Warning'); return }
-            $seg | Export-Text -path $outFile -timestamps
+            $tray.ShowBalloonTip(3000, 'Diktatorn', "Mote transkriberat: $([System.IO.Path]::GetFileName($script:meetOutFile))", 'Info')
+            Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
         }
-        $tray.ShowBalloonTip(3000, 'Diktatorn', "Mote transkriberat: $([System.IO.Path]::GetFileName($outFile))", 'Info')
-        Invoke-Item $outFile
-    } catch { $tray.ShowBalloonTip(4000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error') }
-    finally { Set-Status 'redo' $icoIdle }
+        Invoke-Item $script:meetOutFile
+    } catch {
+        Write-Log "Stop-Meeting: $($_.Exception.Message)"
+        # Do NOT delete $meetDir on error - the raw chunk audio is the only copy left.
+        $tray.ShowBalloonTip(6000, 'Diktatorn', "Fel vid motesavslut. Ljud sparat i: $($script:meetDir)", 'Error')
+    } finally { Set-Status 'redo' $icoIdle }
 }
+
+# Meeting timer: rotation happens inside the recorder, so this just transcribes finished
+# chunks (a few per tick to drain any backlog without freezing the UI) and updates status.
+$meetTimer = New-Object System.Windows.Forms.Timer
+$meetTimer.Interval = 1000
+$meetTimer.add_Tick({
+    if (-not $script:meeting -or $script:meetBusy) { return }
+    $script:meetBusy = $true
+    try {
+        $ready = $script:meetRec.ChunkIndex
+        if ($script:meetProcessed -lt $ready) {
+            Process-ReadyChunks ([math]::Min($ready, $script:meetProcessed + 3))
+        }
+        $mins = [math]::Round(((Get-Date) - $script:meetStart).TotalMinutes)
+        Set-Status "MOTE $mins min - $($script:meetLines.Count) rader (live)" $icoMeet
+    } catch { Write-Log "meetTimer: $($_.Exception.Message)" }
+    finally { $script:meetBusy = $false }
+})
 
 # --- Hotkeys: 1 = dictation toggle (Ctrl+Shift+D), 2 = meeting toggle (Ctrl+Shift+M) ---
 $hk = New-Object WfNative
@@ -542,7 +707,7 @@ $script:pttSuppressed = $false
 $hk.add_HotkeyPressed({
     param($id)
     $script:pttSuppressed = $true   # a combo with a letter fired; block push-to-talk until modifiers released
-    if ($id -eq 1) { if (-not $script:meeting) { if ($script:dictating) { Stop-Dictation } else { Start-Dictation } } }
+    if ($id -eq 1) { if (-not $script:meeting) { if ($script:dictating) { Stop-Dictation } else { [void](Start-Dictation) } } }
     elseif ($id -eq 2) { if ($script:meeting) { Stop-Meeting } else { Start-Meeting } }
 })
 
@@ -561,8 +726,7 @@ $timer.add_Tick({
         if (-not $script:dictating) {
             if ($script:pttCandidateTick -eq 0) { $script:pttCandidateTick = [Environment]::TickCount }
             elseif (([Environment]::TickCount - $script:pttCandidateTick) -ge $pttDelayMs) {
-                $script:pttActive = $true
-                Start-Dictation
+                if (Start-Dictation) { $script:pttActive = $true } else { $script:pttSuppressed = $true }
             }
         }
     } else {
@@ -581,7 +745,7 @@ $appContext = New-Object System.Windows.Forms.ApplicationContext
 $miMeeting.add_Click({ if ($script:meeting) { Stop-Meeting } else { Start-Meeting } })
 $miQuit.add_Click({
     try { $timer.Stop() } catch {}
-    try { if ($script:meeting) { $script:meetRec.Stop() } } catch {}
+    try { if ($script:meeting) { Stop-Meeting } } catch {}   # finish + save the transcript, don't lose it
     try { if ($script:dictating) { $script:micRec.Stop() } } catch {}
     $hk.Dispose(); $tray.Visible = $false; $appContext.ExitThread()
 })
