@@ -4,7 +4,7 @@
 ; Compile:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" Diktatorn.iss
 
 #define MyAppName "Diktatorn"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Daniel Hesse"
 #define MyAppURL "https://github.com/DanielHesse79/diktatorn-whisper"
 
@@ -42,6 +42,7 @@ Source: "Generate-Icon.ps1";    DestDir: "{app}"; Flags: ignoreversion
 Source: "Diktatorn.ico";        DestDir: "{app}"; Flags: ignoreversion
 Source: "Install-Diktatorn.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";            DestDir: "{app}"; Flags: ignoreversion
+Source: "Anvandarmanual.md";    DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE";              DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
