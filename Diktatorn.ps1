@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 $talanalysCfg = Join-Path $root 'diktatorn-talanalys.txt'   # 'off' | 'stats' | 'coach'
 $coachModel   = 'llama-3.3-70b-versatile'                   # Groq LLM (same free API key)
 $trendCsv     = Join-Path $outDir 'talanalys-trend.csv'
+$meetModeCfg  = Join-Path $root 'diktatorn-meetmode.txt'    # 'live' | 'deferred' (transcribe after the meeting; kind to weak GPUs)
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
 $crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
@@ -388,6 +389,22 @@ function Set-MicDevice([int]$idx) {
 }
 function Set-Model([string]$file) {
     if ($script:dictating -or $script:meeting) { return }
+    $path = Join-Path $modelDir $file
+    if (-not (Test-Path $path)) {
+        # Installed users only have one model on disk - fetch the chosen one on demand.
+        Set-Status 'laddar ner modell...' $icoWork
+        $tray.ShowBalloonTip(4000, 'Diktatorn', "Modellen $file laddas ner - det kan ta nagra minuter...", 'Info')
+        [System.Windows.Forms.Application]::DoEvents()
+        try {
+            Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$file" -OutFile $path
+        } catch {
+            Write-Log "model download ${file}: $($_.Exception.Message)"
+            Remove-Item $path -ErrorAction SilentlyContinue
+            $tray.ShowBalloonTip(4000, 'Diktatorn', 'Nedladdningen misslyckades - modellen byttes inte.', 'Error')
+            Set-Status 'redo' $icoIdle
+            return
+        }
+    }
     Set-Status 'byter modell...' $icoWork
     [System.Windows.Forms.Application]::DoEvents()
     Reload-Model $file
@@ -432,6 +449,21 @@ function Set-Talanalys([string]$t) {
     $script:talanalys = $t
     try { [System.IO.File]::WriteAllText($talanalysCfg, $t) } catch {}
     foreach ($it in $script:talanalysMenuItems) { $it.Checked = ($it.Tag -eq $t) }
+}
+
+# --- Meeting transcription mode: live (growing transcript) | deferred (transcribe on stop) ---
+function Resolve-MeetMode {
+    if (Test-Path $meetModeCfg) {
+        $m = (Get-Content $meetModeCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($m -eq 'deferred') { return 'deferred' }
+    }
+    return 'live'
+}
+$script:meetMode = Resolve-MeetMode
+function Set-MeetMode([string]$m) {
+    $script:meetMode = $m
+    try { [System.IO.File]::WriteAllText($meetModeCfg, $m) } catch {}
+    foreach ($it in $script:meetModeMenuItems) { $it.Checked = ($it.Tag -eq $m) }
 }
 
 # --- Tray ---
@@ -507,6 +539,20 @@ foreach ($t in @(
     $script:talanalysMenuItems += $item
 }
 [void]$menu.Items.Add($miTal)
+$miMode = New-Object System.Windows.Forms.ToolStripMenuItem 'Motestranskribering'
+$script:meetModeMenuItems = @()
+foreach ($m in @(
+    @{t='live';     l='Live (vaxande transkript)'},
+    @{t='deferred'; l='Efter motet (skonar datorn)'}
+)) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $m.l
+    $item.Tag = $m.t
+    $item.Checked = ($m.t -eq $script:meetMode)
+    $item.add_Click({ Set-MeetMode ([string]$this.Tag) })
+    [void]$miMode.DropDownItems.Add($item)
+    $script:meetModeMenuItems += $item
+}
+[void]$menu.Items.Add($miMode)
 $miKey = $menu.Items.Add('Ange Groq API-nyckel...')
 $miKey.add_Click({
     Add-Type -AssemblyName Microsoft.VisualBasic
@@ -597,6 +643,7 @@ function Stop-Dictation {
 # Mic chunks = you ("Du"), loopback chunks = everyone else ("Ovriga"). No ML diarization
 # needed: the label IS the stream the audio came from.
 $script:meeting  = $false
+$script:meetFinishing = $false
 $script:meetRec  = $null
 $labelYou    = 'Du'
 $labelOthers = [string][char]214 + 'vriga'   # "Ovriga" with a proper capital O-umlaut in output
@@ -686,6 +733,27 @@ function Get-CoachReport([string]$youText, [string]$statsSummary) {
     return $json.choices[0].message.content.Trim()
 }
 
+# Deferred mode: during the meeting we only MEASURE voiced seconds per chunk (cheap CPU-only
+# cleanup, no Whisper) so the crocodile warning still works; transcription happens on stop.
+function Measure-Chunk([int]$i) {
+    $y = 0.0; $o = 0.0
+    $clean = Join-Path $script:meetDir 'clean.wav'
+    foreach ($s in @(
+        @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_sys.wav' -f $i)); you = $false },
+        @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_mic.wav' -f $i)); you = $true }
+    )) {
+        try {
+            if ((Test-Path $s.wav) -and ((Get-Item $s.wav).Length -gt 8192)) {
+                [AudioPrep]::Clean($s.wav, $clean)
+                if ((Test-Path $clean) -and ((Get-Item $clean).Length -gt 16000)) {
+                    if ($s.you) { $y = Get-WavSeconds $clean } else { $o = Get-WavSeconds $clean }
+                }
+            }
+        } catch { Write-Log "measure ${i}: $($_.Exception.Message)" }
+    }
+    $script:chunkListYou.Add($y); $script:chunkListOthers.Add($o)
+}
+
 # Process finished chunk pairs [meetProcessed, upTo): transcribe each stream independently,
 # label (Du/Ovriga), accumulate stats. A stream is deleted ONLY once transcribed or confirmed
 # silent; on a transcription error its audio is KEPT (meetFailed=$true) so nothing is lost.
@@ -722,9 +790,15 @@ function Process-ReadyChunks([int]$upTo) {
                 Write-Log "chunk ${i} ($($stream.label)): $($_.Exception.Message)"   # keep the audio (not deleted)
             }
         }
-        $script:chunkListYou.Add($chunkYou); $script:chunkListOthers.Add($chunkOthers)   # rolling window + monolog data
+        if ($script:chunkListYou.Count -le $i) {   # deferred mode already measured this chunk live
+            $script:chunkListYou.Add($chunkYou); $script:chunkListOthers.Add($chunkOthers)   # rolling window + monolog data
+        }
         $script:meetProcessed++
         if ($any) { Save-LiveTranscript }
+        if ($script:meetFinishing) {   # post-meeting batch: show progress, keep the tray alive
+            Set-Status "transkriberar mote... $($script:meetProcessed)/$upTo" $icoWork
+            [System.Windows.Forms.Application]::DoEvents()
+        }
     }
 }
 
@@ -789,6 +863,8 @@ function Start-Meeting {
         $script:meetSecsYou = 0.0; $script:meetSecsOthers = 0.0
         $script:meetWordsYou = 0;  $script:meetWordsOthers = 0
         $script:meetAnalysis = $script:talanalys           # snapshot: mid-meeting toggles apply to the NEXT meeting
+        $script:meetModeActive = $script:meetMode          # snapshot: live or deferred for THIS meeting
+        $script:meetFinishing = $false
         $script:meetFillers = @{}; $script:meetQuestions = 0; $script:meetCoach = $null
         $script:chunkListYou = New-Object 'System.Collections.Generic.List[double]'
         $script:chunkListOthers = New-Object 'System.Collections.Generic.List[double]'
@@ -819,6 +895,7 @@ function Start-Meeting {
 function Stop-Meeting {
     if (-not $script:meeting) { return }
     $script:meeting = $false
+    $script:meetFinishing = $true   # blocks dictation hotkeys while the post-meeting batch runs
     $meetTimer.Stop()
     $miMeeting.Text = 'Starta motesinspelning (Ctrl+Shift+M)'
     $miOpenLive.Enabled = $false
@@ -872,7 +949,7 @@ function Stop-Meeting {
         Write-Log "Stop-Meeting: $($_.Exception.Message)"
         # Do NOT delete $meetDir on error - the raw chunk audio is the only copy left.
         $tray.ShowBalloonTip(6000, 'Diktatorn', "Fel vid motesavslut. Ljud sparat i: $($script:meetDir)", 'Error')
-    } finally { Set-Status 'redo' $icoIdle }
+    } finally { $script:meetFinishing = $false; Set-Status 'redo' $icoIdle }
 }
 
 # Meeting timer: rotation happens inside the recorder, so this just transcribes finished
@@ -884,7 +961,9 @@ $meetTimer.add_Tick({
     $script:meetBusy = $true
     try {
         $ready = $script:meetRec.ChunkIndex
-        if ($script:meetProcessed -lt $ready) {
+        if ($script:meetModeActive -eq 'deferred') {
+            while ($script:chunkListYou.Count -lt $ready) { Measure-Chunk $script:chunkListYou.Count }   # stats only, no Whisper
+        } elseif ($script:meetProcessed -lt $ready) {
             Process-ReadyChunks ([math]::Min($ready, $script:meetProcessed + 3))
         }
         # Crocodile warning: rolling-window talk share (big mouth, small ears -> listen more).
@@ -908,7 +987,8 @@ $meetTimer.add_Tick({
             }
         }
         $mins = [math]::Round(((Get-Date) - $script:meetStart).TotalMinutes)
-        Set-Status "MOTE $mins min - $($script:meetLines.Count) rader (live)" $icoMeet
+        if ($script:meetModeActive -eq 'deferred') { Set-Status "MOTE $mins min - spelar in (transkriberas efter motet)" $icoMeet }
+        else { Set-Status "MOTE $mins min - $($script:meetLines.Count) rader (live)" $icoMeet }
     } catch { Write-Log "meetTimer: $($_.Exception.Message)" }
     finally { $script:meetBusy = $false }
 })
@@ -921,7 +1001,7 @@ $script:pttSuppressed = $false
 $hk.add_HotkeyPressed({
     param($id)
     $script:pttSuppressed = $true   # a combo with a letter fired; block push-to-talk until modifiers released
-    if ($id -eq 1) { if (-not $script:meeting) { if ($script:dictating) { Stop-Dictation } else { [void](Start-Dictation) } } }
+    if ($id -eq 1) { if (-not $script:meeting -and -not $script:meetFinishing) { if ($script:dictating) { Stop-Dictation } else { [void](Start-Dictation) } } }
     elseif ($id -eq 2) { if ($script:meeting) { Stop-Meeting } else { Start-Meeting } }
 })
 
@@ -935,7 +1015,7 @@ $timer.Interval = 40
 $timer.add_Tick({
     $both = ([WfNative]::IsDown($VK_CONTROL)) -and ([WfNative]::IsDown($VK_SHIFT))
     if ($both) {
-        if ($script:meeting -or $script:pttSuppressed) { return }
+        if ($script:meeting -or $script:meetFinishing -or $script:pttSuppressed) { return }
         if ($script:pttActive) { return }
         if (-not $script:dictating) {
             if ($script:pttCandidateTick -eq 0) { $script:pttCandidateTick = [Environment]::TickCount }

@@ -64,6 +64,54 @@ if (-not (Test-Path $modelPath)) {
     Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$modelFile" -OutFile $modelPath -Resume
 } else { Step "$modelFile finns redan - hoppar over." }
 
+# 4b. GPU benchmark: MEASURE transcription speed (not guess from the card's name), then
+#     auto-configure meeting mode and write a human-readable recommendation.
+Step 'Matar transkriberings-hastigheten pa din dator (ca 30-60 s)...'
+try {
+    Import-Module (Join-Path $root 'WhisperPS\WhisperPS\WhisperPS.psd1') 3>$null
+    $adapters = @(Get-Adapters)
+    $gpu = @($adapters | Where-Object { $_ -notlike '*Basic Render*' })[0]
+    if (-not $gpu) { $gpu = $adapters[0] }
+    Add-Type -AssemblyName System.Speech
+    Add-Type -Path (Join-Path $root 'lib\NAudio.dll')
+    $bwav = Join-Path $env:TEMP 'diktatorn_bench.wav'
+    $sp = New-Object System.Speech.Synthesis.SpeechSynthesizer
+    $sp.SetOutputToWaveFile($bwav)
+    $sp.Speak('This is a benchmark of the transcription speed on this computer. We measure how fast the model runs compared to real time. The second run is the one that counts, because the model is then warm.')
+    $sp.Dispose()
+    $rd = New-Object NAudio.Wave.WaveFileReader($bwav); $audioSec = $rd.TotalTime.TotalSeconds; $rd.Dispose()
+    $m = Import-WhisperModel -path $modelPath -adapter $gpu
+    $null = Transcribe-File -model $m -path $bwav -language en                                   # cold warm-up
+    $t = Measure-Command { $null = Transcribe-File -model $m -path $bwav -language en }          # warm = measured
+    $rtf = [math]::Round($audioSec / [math]::Max(0.1, $t.TotalSeconds), 1)
+    # Live meeting mode needs ~3-4x realtime (two streams + analysis pass per 30 s window).
+    $mode = if ($rtf -ge 4) { 'live' } else { 'deferred' }
+    [System.IO.File]::WriteAllText((Join-Path $root 'diktatorn-meetmode.txt'), $mode)
+    $rec = @(
+        "Diktatorn - automatisk rekommendation ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))",
+        "GPU: $gpu",
+        "Uppmatt hastighet (modell: $Model): ${rtf}x realtid",
+        ""
+    )
+    if ($rtf -ge 8) {
+        $rec += "Din dator ar snabb. Motestranskribering: LIVE. Du kan aven byta modell till"
+        $rec += "'Noggrann (medium)' i menyn for battre kvalitet (laddas ner automatiskt vid val)."
+    } elseif ($rtf -ge 4) {
+        $rec += "Din dator klarar live-transkribering med modellen '$Model'. Motestranskribering: LIVE."
+        $rec += "Undvik 'Noggrann (medium)' for moten, eller byt till 'Efter motet' i menyn."
+    } else {
+        $rec += "Din grafik ar for langsam for live-transkribering. Motestranskribering har satts"
+        $rec += "till 'EFTER MOTET' (spelar in under motet, transkriberar nar du trycker stopp)."
+        $rec += "Tips: Groq-molnlaget (gratis API-nyckel, se manualen) ger snabb transkribering"
+        $rec += "aven pa klena datorer."
+    }
+    $recFile = Join-Path $root 'Diktatorn-rekommendation.txt'
+    [System.IO.File]::WriteAllText($recFile, (($rec -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($true))
+    foreach ($line in $rec) { Step $line }
+} catch {
+    Step "Benchmark hoppades over ($($_.Exception.Message)) - standardinstallningar behalls."
+}
+
 # 5. Icon (generate the cartoon "generalissimo" .ico)
 $icon = Join-Path $root 'Diktatorn.ico'
 $genIcon = Join-Path $root 'Generate-Icon.ps1'

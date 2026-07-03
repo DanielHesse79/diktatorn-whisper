@@ -9,10 +9,8 @@ Models/
 lz4.txt
 
 # Local config, state, and secrets — never commit
-diktatorn-groq.txt
-diktatorn-mic.txt
-diktatorn-model.txt
-diktatorn-backend.txt
+diktatorn-*.txt
+Diktatorn-rekommendation.txt
 
 # Logs / temp
 *.log

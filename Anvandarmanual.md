@@ -94,6 +94,7 @@ råversionen av ditt tal under huven.
 | **Talhastighet** | Visar hur snabbt du pratar (tecken/min + ord/min) och ett snitt för sessionen. |
 | **Starta mötesinspelning** | Samma som Ctrl+Shift+M. |
 | **Visa transkript (live)** | Öppnar det växande transkriptet medan mötet pågår. |
+| **Mötestranskribering** | **Live** (texten växer under mötet) eller **Efter mötet** (spelar bara in under mötet och transkriberar allt när du trycker stopp – skonsamt för klenare datorer; krokodilvarningen fungerar ändå). Installationen mäter din dators hastighet och väljer rätt läge automatiskt – se `Diktatorn-rekommendation.txt` i programmappen. |
 | **Mikrofon** | Välj vilken mikrofon dikteringen lyssnar på. Välj ditt headset, inte t.ex. webbkameran. |
 | **Modell** | Snabbhet vs noggrannhet (se punkt 5). |
 | **Transkribering** | Växla mellan **Lokal** (din dator, privat) och **Groq moln** (snabbt, se punkt 6). |

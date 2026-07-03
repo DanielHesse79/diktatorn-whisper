@@ -59,6 +59,12 @@ powershell -ExecutionPolicy Bypass -File .\Install-Diktatorn.ps1
 & "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe" Diktatorn.iss   # -> dist\Diktatorn-Setup.exe
 ```
 
+The installer also **benchmarks your GPU** (a real timed transcription, not name-guessing) and
+auto-configures the meeting mode: fast machines get **live** transcription, slow ones get
+**deferred** (record during the meeting, transcribe on stop — the crocodile warning still works,
+since it only needs cheap talk-time measurement). See `Diktatorn-rekommendation.txt` after install.
+Models picked in the tray menu are downloaded on demand.
+
 The installer downloads everything that can't be redistributed here:
 - `Whisper.dll` + `WhisperDesktop.exe` (from the Const-me/Whisper 1.12 release)
 - the `WhisperPS` PowerShell module
