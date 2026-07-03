@@ -17,8 +17,11 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 - **Dictation → typed at the cursor**, in any app:
   - **Hold `Ctrl+Shift`** (push-to-talk): speak, release, text is typed.
   - **`Ctrl+Shift+D`** (toggle): press to start, press again to stop.
-- **Meeting transcription** (`Ctrl+Shift+M`): captures **system audio** (remote participants via WASAPI
-  loopback), transcribes the whole meeting on stop, saves a timestamped transcript and opens it.
+- **Meeting transcription** (`Ctrl+Shift+M`): records **system audio** (remote participants, WASAPI
+  loopback) and **your mic** as separate streams, transcribed **continuously during the meeting** in 30 s
+  chunks with **speaker labels** (`Du:` = you, `Övriga:` = the others — the label is simply which stream
+  the audio came from, no ML diarization needed). The transcript file grows live (tray → *Visa transkript*),
+  and **talk-time stats** (minutes + % per side) are appended on stop.
 - **Local or cloud** transcription, switchable in the tray:
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for

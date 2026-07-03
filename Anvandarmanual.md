@@ -43,13 +43,29 @@ Använd push-to-talk för korta saker, toggle för längre stycken (då slipper 
 
 ## 3. Mötestranskribering
 
-För att transkribera ett **online-möte** (Teams, Zoom, Meet) fångar Diktatorn **datorljudet** – alltså det
-de andra deltagarna säger.
+Diktatorn spelar in **två spår samtidigt** under ett online-möte (Teams, Zoom, Meet):
+- **datorljudet** = det de andra deltagarna säger → märks **Övriga:**
+- **din mikrofon** = det du säger → märks **Du:**
+
+Transkriberingen sker **löpande under mötet** i 30-sekundersblock med tidsstämplar.
 
 1. Starta mötet som vanligt.
 2. Tryck **Ctrl+Shift+M** (eller högerklicka ikonen → *Starta mötesinspelning*). Ikonen blir blå.
-3. När mötet är klart: tryck **Ctrl+Shift+M** igen. Diktatorn transkriberar hela mötet och **öppnar en
-   textfil** automatiskt (sparas i `Dokument\Transcriptions`).
+3. Vill du kika medan mötet pågår: högerklicka ikonen → **Visa transkript (live)** – filen växer i realtid.
+4. När mötet är klart: tryck **Ctrl+Shift+M** igen. Filen kompletteras med **talfördelning**
+   (hur många minuter och procent du respektive de andra pratade) och öppnas automatiskt
+   (sparas i `Dokument\Transcriptions`).
+
+Exempel på resultat:
+```
+[00:03:30] Övriga: Vi behöver besluta om budgeten innan fredag.
+[00:03:30] Du: Jag tar fram ett förslag imorgon.
+...
+Talfördelning: Du 12,4 min (38%)  |  Övriga 20,1 min (62%)
+```
+
+> 💡 Med **headset** blir uppdelningen Du/Övriga ren. Kör du mötet på **högtalare** hör din mikrofon
+> även de andra, så deras ord kan dyka upp under "Du".
 
 > ⚠️ Informera alltid deltagarna om att mötet spelas in/transkriberas. För känsliga möten: använd
 > **Lokal** transkribering (se punkt 5), så lämnar ljudet aldrig din dator.
@@ -62,6 +78,7 @@ de andra deltagarna säger.
 |-----|-------------|
 | **Talhastighet** | Visar hur snabbt du pratar (tecken/min + ord/min) och ett snitt för sessionen. |
 | **Starta mötesinspelning** | Samma som Ctrl+Shift+M. |
+| **Visa transkript (live)** | Öppnar det växande transkriptet medan mötet pågår. |
 | **Mikrofon** | Välj vilken mikrofon dikteringen lyssnar på. Välj ditt headset, inte t.ex. webbkameran. |
 | **Modell** | Snabbhet vs noggrannhet (se punkt 5). |
 | **Transkribering** | Växla mellan **Lokal** (din dator, privat) och **Groq moln** (snabbt, se punkt 6). |
