@@ -38,8 +38,18 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 
 # --- Talanalys (private speech analysis; only YOUR mic lines are ever analyzed) ---
 $talanalysCfg = Join-Path $root 'diktatorn-talanalys.txt'   # 'off' | 'stats' | 'coach'
-$coachModel   = 'llama-3.3-70b-versatile'                   # Groq LLM (same free API key)
 $trendCsv     = Join-Path $outDir 'talanalys-trend.csv'
+# AI coach engine: selectable provider. All three speak the OpenAI chat-completions
+# protocol, so one implementation serves them all (url + key + model differ).
+$coachCfg          = Join-Path $root 'diktatorn-coach.txt'         # 'groq' | 'ollama' | 'openrouter'
+$coachModelCfg     = Join-Path $root 'diktatorn-coach-model.txt'   # optional: one line overriding the provider's default model
+$openrouterKeyFile = Join-Path $root 'diktatorn-openrouter.txt'    # OpenRouter API key (sk-or-...)
+$coachArchive      = Join-Path $outDir 'coach-arkiv.md'            # coach memory: past reports (local, private)
+$coachDefaults = @{
+    groq       = @{ url = 'https://api.groq.com/openai/v1/chat/completions'; model = 'llama-3.3-70b-versatile' }
+    ollama     = @{ url = 'http://localhost:11434/v1/chat/completions';      model = 'llama3.1' }
+    openrouter = @{ url = 'https://openrouter.ai/api/v1/chat/completions';   model = 'openrouter/auto' }
+}
 $meetModeCfg  = Join-Path $root 'diktatorn-meetmode.txt'    # 'live' | 'deferred' (transcribe after the meeting; kind to weak GPUs)
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
@@ -443,12 +453,44 @@ function Resolve-Talanalys {
 }
 $script:talanalys = Resolve-Talanalys
 function Set-Talanalys([string]$t) {
-    if ($t -eq 'coach' -and -not (Get-GroqKey)) {
-        $tray.ShowBalloonTip(4000, 'Diktatorn', 'AI-coachen behover en Groq-nyckel. Hogerklicka -> Ange Groq API-nyckel.', 'Warning')
+    if ($t -eq 'coach' -and -not (Get-CoachKey $script:coach)) {
+        $tray.ShowBalloonTip(4000, 'Diktatorn', "AI-coachen behover en API-nyckel for vald motor ($($script:coach)).", 'Warning')
     }
     $script:talanalys = $t
     try { [System.IO.File]::WriteAllText($talanalysCfg, $t) } catch {}
     foreach ($it in $script:talanalysMenuItems) { $it.Checked = ($it.Tag -eq $t) }
+}
+
+# --- Coach engine selection: groq (free cloud) | ollama (local) | openrouter (your pick) ---
+function Resolve-Coach {
+    if (Test-Path $coachCfg) {
+        $c = (Get-Content $coachCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($c -in @('groq', 'ollama', 'openrouter')) { return $c }
+    }
+    return 'groq'
+}
+$script:coach = Resolve-Coach
+function Get-CoachKey([string]$provider) {
+    switch ($provider) {
+        'groq'       { return (Get-GroqKey) }
+        'openrouter' {
+            if ($env:OPENROUTER_API_KEY) { return $env:OPENROUTER_API_KEY }
+            if (Test-Path $openrouterKeyFile) { $k = (Get-Content $openrouterKeyFile -Raw -ErrorAction SilentlyContinue).Trim(); if ($k) { return $k } }
+            return $null
+        }
+        default      { return 'local' }   # Ollama needs no key; non-null sentinel
+    }
+}
+function Set-Coach([string]$c) {
+    if ($c -eq 'openrouter' -and -not (Get-CoachKey 'openrouter')) {
+        $tray.ShowBalloonTip(4000, 'Diktatorn', 'OpenRouter behover en API-nyckel. Hogerklicka -> Ange OpenRouter API-nyckel.', 'Warning')
+    }
+    if ($c -eq 'ollama') {
+        $tray.ShowBalloonTip(4000, 'Diktatorn', 'Kraver att Ollama kor lokalt (ollama.com). Modell valjs i diktatorn-coach-model.txt.', 'Info')
+    }
+    $script:coach = $c
+    try { [System.IO.File]::WriteAllText($coachCfg, $c) } catch {}
+    foreach ($it in $script:coachMenuItems) { $it.Checked = ($it.Tag -eq $c) }
 }
 
 # --- Meeting transcription mode: live (growing transcript) | deferred (transcribe on stop) ---
@@ -539,6 +581,21 @@ foreach ($t in @(
     $script:talanalysMenuItems += $item
 }
 [void]$menu.Items.Add($miTal)
+$miCoach = New-Object System.Windows.Forms.ToolStripMenuItem 'Coach-motor (AI-coach)'
+$script:coachMenuItems = @()
+foreach ($c in @(
+    @{t='groq';       l='Groq (gratis, moln)'},
+    @{t='ollama';     l='Ollama (lokal, privat)'},
+    @{t='openrouter'; l='OpenRouter (eget modellval)'}
+)) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $c.l
+    $item.Tag = $c.t
+    $item.Checked = ($c.t -eq $script:coach)
+    $item.add_Click({ Set-Coach ([string]$this.Tag) })
+    [void]$miCoach.DropDownItems.Add($item)
+    $script:coachMenuItems += $item
+}
+[void]$menu.Items.Add($miCoach)
 $miMode = New-Object System.Windows.Forms.ToolStripMenuItem 'Motestranskribering'
 $script:meetModeMenuItems = @()
 foreach ($m in @(
@@ -559,6 +616,13 @@ $miKey.add_Click({
     $cur = Get-GroqKey
     $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din Groq API-nyckel (gsk_...):', 'Groq API-nyckel', $cur)
     if ($val) { try { [System.IO.File]::WriteAllText($groqKeyFile, $val.Trim()); $tray.ShowBalloonTip(2500, 'Diktatorn', 'Groq-nyckel sparad.', 'Info') } catch {} }
+})
+$miORKey = $menu.Items.Add('Ange OpenRouter API-nyckel...')
+$miORKey.add_Click({
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $cur = Get-CoachKey 'openrouter'
+    $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din OpenRouter API-nyckel (sk-or-...):', 'OpenRouter API-nyckel', $cur)
+    if ($val) { try { [System.IO.File]::WriteAllText($openrouterKeyFile, $val.Trim()); $tray.ShowBalloonTip(2500, 'Diktatorn', 'OpenRouter-nyckel sparad.', 'Info') } catch {} }
 })
 [void]$menu.Items.Add('-')
 $miQuit = $menu.Items.Add('Avsluta')
@@ -715,22 +779,61 @@ function Add-TrendRow([int]$mins, [int]$sharePct, [double]$fillPerMin, [int]$que
         Add-Content -Path $trendCsv -Value $row
     } catch { Write-Log "trend: $($_.Exception.Message)" }
 }
-# AI coach: gets ONLY your lines + your stats. Decodes the response explicitly as UTF-8
-# (PS 5.1 Invoke-RestMethod mis-decodes JSON bodies as Latin-1).
-function Get-CoachReport([string]$youText, [string]$statsSummary) {
-    $key = Get-GroqKey
-    if (-not $key -or -not $youText) { return $null }
-    if ($youText.Length -gt 12000) { $youText = $youText.Substring(0, 4000) + ' [...] ' + $youText.Substring($youText.Length - 8000) }
-    $sys = 'You are an experienced, direct but friendly sales/communication coach. You receive ONLY the user''s own lines from a meeting (the other side is intentionally excluded) plus speech statistics. Reply in SWEDISH: 3-5 short, concrete coaching points (listening vs talking, questions asked, filler words, one specific exercise for next meeting). No preamble. Max 130 words.'
-    $body = @{ model = $coachModel; temperature = 0.4; max_tokens = 400; messages = @(
-        @{ role = 'system'; content = $sys },
-        @{ role = 'user'; content = "STATISTIK:`n$statsSummary`n`nMINA REPLIKER:`n$youText" }
+# Generic OpenAI-protocol chat call, used by every coach provider. Decodes the response
+# explicitly as UTF-8 (PS 5.1 Invoke-RestMethod mis-decodes JSON bodies as Latin-1).
+function Invoke-CoachLLM([string]$system, [string]$user) {
+    $p = $script:coach
+    $def = $coachDefaults[$p]
+    $model = $def.model
+    if (Test-Path $coachModelCfg) { $m = (Get-Content $coachModelCfg -Raw -ErrorAction SilentlyContinue).Trim(); if ($m) { $model = $m } }
+    $key = Get-CoachKey $p
+    if (-not $key) { throw "Ingen API-nyckel for coach-motorn ($p)" }
+    $headers = @{}
+    if ($p -ne 'ollama') { $headers['Authorization'] = "Bearer $key" }
+    $body = @{ model = $model; temperature = 0.4; max_tokens = 500; messages = @(
+        @{ role = 'system'; content = $system },
+        @{ role = 'user'; content = $user }
     ) } | ConvertTo-Json -Depth 5
-    $resp = Invoke-WebRequest -UseBasicParsing -Uri 'https://api.groq.com/openai/v1/chat/completions' -Method Post `
-        -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json; charset=utf-8' `
-        -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 60
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri $def.url -Method Post -Headers $headers `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 120
     $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
     return $json.choices[0].message.content.Trim()
+}
+
+# Coach memory: past reports live in a local markdown archive; the last two are fed back
+# to the coach so it can follow up on its own previous advice ("did the exercise work?").
+function Get-CoachMemory {
+    if (-not (Test-Path $coachArchive)) { return '' }
+    try {
+        $raw = Get-Content $coachArchive -Raw -Encoding UTF8
+        $parts = @(($raw -split '(?m)^## ') | Where-Object { $_ -and $_.Trim() -and ($_ -notmatch '^# ') })
+        return (@($parts | Select-Object -Last 2 | ForEach-Object { '## ' + $_.Trim() }) -join "`n`n")
+    } catch { return '' }
+}
+function Add-CoachMemory([string]$report) {
+    try {
+        if (-not (Test-Path $coachArchive)) {
+            [System.IO.File]::WriteAllText($coachArchive, "# Coach-arkiv (privat - bara du)`r`n`r`n", [System.Text.UTF8Encoding]::new($true))
+        }
+        Add-Content -Path $coachArchive -Value ("## " + (Get-Date -Format 'yyyy-MM-dd HH:mm') + "`r`n`r`n" + $report + "`r`n") -Encoding UTF8
+    } catch { Write-Log "coach-arkiv: $($_.Exception.Message)" }
+}
+
+# AI coach: gets ONLY your lines + stats + its own past reports. Structured framework,
+# trend-aware, ends with ONE exercise it will follow up on next meeting.
+function Get-CoachReport([string]$youText, [string]$statsSummary) {
+    if (-not $youText) { return $null }
+    if ($youText.Length -gt 12000) { $youText = $youText.Substring(0, 4000) + ' [...] ' + $youText.Substring($youText.Length - 8000) }
+    $sys = 'You are an experienced, direct but friendly sales/communication coach. You receive ONLY the user''s own lines from a meeting (the other side is intentionally excluded), speech statistics, recent trend data, and your own previous coaching reports. Reply in SWEDISH using exactly these numbered sections, 1-2 sentences each: 1) Uppfoljning - compare against your previous reports and the exercise you gave; call out progress or regression with numbers. If no previous reports, say this is the baseline. 2) Balans & lyssnande - talk share, monologues. 3) Fragor - quantity and quality of questions asked. 4) Tydlighet - filler words, clarity. 5) Ovning till nasta mote - ONE concrete, measurable exercise. No preamble. Max 170 words.'
+    $mem = Get-CoachMemory
+    if (-not $mem) { $mem = '(inga tidigare rapporter)' }
+    $trendRaw = ''
+    if (Test-Path $trendCsv) { try { $trendRaw = (Get-Content $trendCsv | Select-Object -Last 6) -join "`n" } catch {} }
+    $usr = "TIDIGARE COACHRAPPORTER:`n$mem`n`nTREND-CSV (senaste moten):`n$trendRaw`n`nDAGENS STATISTIK:`n$statsSummary`n`nMINA REPLIKER FRAN DAGENS MOTE:`n$youText"
+    $report = Invoke-CoachLLM $sys $usr
+    if ($report) { Add-CoachMemory $report }
+    return $report
 }
 
 # Deferred mode: during the meeting we only MEASURE voiced seconds per chunk (cheap CPU-only

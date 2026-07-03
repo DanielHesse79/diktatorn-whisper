@@ -85,6 +85,22 @@ Resultatet läggs längst ner i mötestranskriptet. Dessutom sparas en trendfil
 utfyllnadsord per minut, frågor. Transkriptet du läser är alltid städat; analysen tittar på
 råversionen av ditt tal under huven.
 
+**AI-coachen har minne.** Rapporterna sparas i `Dokument\Transcriptions\coach-arkiv.md` och
+coachen läser sina senaste rapporter inför varje nytt möte – den följer alltså upp övningen den
+gav dig ("frågorna upp från 1 till 3, bra") istället för att börja om varje gång.
+
+**Välj coach-motor** under **tray-ikonen → Coach-motor (AI-coach)**:
+
+| Motor | Kostnad | Integritet | Kommentar |
+|---|---|---|---|
+| **Groq** (standard) | Gratis | Dina repliker → Groq | Samma nyckel som transkriberingen |
+| **Ollama** | Gratis | Helt lokalt – inget lämnar datorn | Kräver [Ollama](https://ollama.com) installerat och en nedladdad modell |
+| **OpenRouter** | Per användning | Dina repliker → vald leverantör | Valfri modell (Claude, GPT, Gemini...). Nyckel via menyn |
+
+Standardmodell per motor kan bytas genom att skriva ett modellnamn i filen
+`diktatorn-coach-model.txt` i programmappen (t.ex. `qwen2.5:14b` för Ollama eller
+`anthropic/claude-haiku-4.5` för OpenRouter).
+
 ---
 
 ## 4. Tray-menyn (högerklicka ikonen)
