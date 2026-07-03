@@ -17,8 +17,10 @@ diktatorn-backend.txt
 # Logs / temp
 *.log
 
-# Generated icon preview
+# Generated icon previews (derived from Diktatorn-source.png)
 Diktatorn.png
+Diktatorn-512.png
+Diktatorn-1024.png
 
 # Inno Setup build output
 dist/

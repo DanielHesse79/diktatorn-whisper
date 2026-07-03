@@ -4,7 +4,7 @@
 ; Compile:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" Diktatorn.iss
 
 #define MyAppName "Diktatorn"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "Daniel Hesse"
 #define MyAppURL "https://github.com/DanielHesse79/diktatorn-whisper"
 
