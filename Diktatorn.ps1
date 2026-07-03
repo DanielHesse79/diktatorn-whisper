@@ -34,6 +34,30 @@ $backendCfg = Join-Path $root 'diktatorn-backend.txt'   # 'local' or 'groq'
 $groqKeyFile = Join-Path $root 'diktatorn-groq.txt'     # Groq API key (plaintext, local only)
 $groqModel  = 'whisper-large-v3-turbo'
 New-Item -ItemType Directory -Force $outDir | Out-Null
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# --- Talanalys (private speech analysis; only YOUR mic lines are ever analyzed) ---
+$talanalysCfg = Join-Path $root 'diktatorn-talanalys.txt'   # 'off' | 'stats' | 'coach'
+$coachModel   = 'llama-3.3-70b-versatile'                   # Groq LLM (same free API key)
+$trendCsv     = Join-Path $outDir 'talanalys-trend.csv'
+# Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
+$crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
+$crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
+$crocMinSpeech   = if ($env:DIKTATORN_CROC_MIN_SPEECH)   { [int]$env:DIKTATORN_CROC_MIN_SPEECH }   else { 120 }
+$crocCooldownSec = if ($env:DIKTATORN_CROC_COOLDOWN_SEC) { [int]$env:DIKTATORN_CROC_COOLDOWN_SEC } else { 600 }
+# Verbatim bias prompt: makes Whisper KEEP filler words in the analysis pass (never shown in the transcript).
+$sw_a = [string][char]229; $sw_o = [string][char]246   # a-ring / o-umlaut (source file stays ASCII)
+$verbatimPrompt = "Eh, ${sw_o}h, ehm, hmm, um, uh, allts${sw_a}, ass${sw_a}, typ, liksom, ba, you know, s${sw_a} att, ju."
+$fillerPatterns = [ordered]@{
+    'eh'                = '\be+h+m?\b'
+    (${sw_o} + 'h')     = ('\b' + ${sw_o} + '+h+m?\b')
+    'um/uh/hmm'         = '\b(um+|uh+|hm+)\b'
+    ('allts' + ${sw_a}) = ('\b(allts' + ${sw_a} + '|ass' + ${sw_a} + ')\b')
+    'typ'               = '\btyp\b'
+    'liksom'            = '\bliksom\b'
+    'ba'                = '\bba\b'
+    'you know'          = '\byou know\b'
+}
 
 function Write-Log([string]$msg) {
     try { Add-Content -Path $logFile -Value ('{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg) } catch {}
@@ -281,7 +305,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 public static class Cloud {
-    static string Post(string apiKey, string path, string model, string language, string responseFormat) {
+    static string Post(string apiKey, string path, string model, string language, string responseFormat, string prompt) {
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
         using (var client = new HttpClient()) {
             client.Timeout = TimeSpan.FromSeconds(180);
@@ -292,6 +316,7 @@ public static class Cloud {
                 form.Add(file, "file", "audio.wav");
                 form.Add(new StringContent(model), "model");
                 if (!string.IsNullOrEmpty(language)) form.Add(new StringContent(language), "language");
+                if (!string.IsNullOrEmpty(prompt)) form.Add(new StringContent(prompt, System.Text.Encoding.UTF8), "prompt");
                 form.Add(new StringContent(responseFormat), "response_format");
                 var resp = client.PostAsync("https://api.groq.com/openai/v1/audio/transcriptions", form).Result;
                 string body = resp.Content.ReadAsStringAsync().Result;
@@ -302,11 +327,15 @@ public static class Cloud {
     }
     // Plain text (dictation).
     public static string Transcribe(string apiKey, string path, string model, string language) {
-        return Post(apiKey, path, model, language, "text");
+        return Post(apiKey, path, model, language, "text", null);
+    }
+    // Plain text with a bias prompt (verbatim analysis pass keeps filler words).
+    public static string TranscribeWithPrompt(string apiKey, string path, string model, string language, string prompt) {
+        return Post(apiKey, path, model, language, "text", prompt);
     }
     // JSON with per-segment timestamps (meetings).
     public static string TranscribeVerbose(string apiKey, string path, string model, string language) {
-        return Post(apiKey, path, model, language, "verbose_json");
+        return Post(apiKey, path, model, language, "verbose_json", null);
     }
 }
 "@
@@ -387,6 +416,24 @@ function Set-Backend([string]$b) {
     foreach ($it in $script:backendMenuItems) { $it.Checked = ($it.Tag -eq $b) }
 }
 
+# --- Talanalys mode: off | stats (local counters + live warning) | coach (+ Groq LLM report) ---
+function Resolve-Talanalys {
+    if (Test-Path $talanalysCfg) {
+        $t = (Get-Content $talanalysCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($t -in @('stats', 'coach')) { return $t }
+    }
+    return 'off'
+}
+$script:talanalys = Resolve-Talanalys
+function Set-Talanalys([string]$t) {
+    if ($t -eq 'coach' -and -not (Get-GroqKey)) {
+        $tray.ShowBalloonTip(4000, 'Diktatorn', 'AI-coachen behover en Groq-nyckel. Hogerklicka -> Ange Groq API-nyckel.', 'Warning')
+    }
+    $script:talanalys = $t
+    try { [System.IO.File]::WriteAllText($talanalysCfg, $t) } catch {}
+    foreach ($it in $script:talanalysMenuItems) { $it.Checked = ($it.Tag -eq $t) }
+}
+
 # --- Tray ---
 function New-DotIcon([System.Drawing.Color]$c) {
     $bmp = New-Object System.Drawing.Bitmap 16,16
@@ -445,6 +492,21 @@ foreach ($b in @(@{t='local'; l='Lokal (GPU, privat)'}, @{t='groq'; l='Groq moln
     $script:backendMenuItems += $item
 }
 [void]$menu.Items.Add($miBackend)
+$miTal = New-Object System.Windows.Forms.ToolStripMenuItem 'Talanalys (privat, bara du)'
+$script:talanalysMenuItems = @()
+foreach ($t in @(
+    @{t='off';   l='Av'},
+    @{t='stats'; l='Statistik + krokodilvarning'},
+    @{t='coach'; l='Statistik + AI-coach (Groq)'}
+)) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $t.l
+    $item.Tag = $t.t
+    $item.Checked = ($t.t -eq $script:talanalys)
+    $item.add_Click({ Set-Talanalys ([string]$this.Tag) })
+    [void]$miTal.DropDownItems.Add($item)
+    $script:talanalysMenuItems += $item
+}
+[void]$menu.Items.Add($miTal)
 $miKey = $menu.Items.Add('Ange Groq API-nyckel...')
 $miKey.add_Click({
     Add-Type -AssemblyName Microsoft.VisualBasic
@@ -560,6 +622,70 @@ function Get-ChunkText([string]$wav) {
     @{ text = $text; secs = $secs }
 }
 
+# --- Talanalys helpers (only ever fed YOUR mic audio/lines, never the others') ---
+# Verbatim pass: re-transcribe the already-cleaned mic chunk with a filler-bias prompt.
+# The result is ONLY used for counting; the visible transcript stays clean.
+function Get-VerbatimText([string]$cleanWav) {
+    try {
+        if ($script:backend -eq 'groq') {
+            $key = Get-GroqKey
+            if (-not $key) { return $null }
+            return ([Cloud]::TranscribeWithPrompt($key, $cleanWav, $groqModel, '', $verbatimPrompt)).Trim()
+        }
+        $seg = Transcribe-File -model $script:model -path $cleanWav -prompt $verbatimPrompt
+        return ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim())
+    } catch { Write-Log "verbatim: $($_.Exception.Message)"; return $null }
+}
+function Count-Fillers([string]$text) {
+    if (-not $text) { return }
+    foreach ($name in $fillerPatterns.Keys) {
+        $n = [regex]::Matches($text, $fillerPatterns[$name], 'IgnoreCase').Count
+        if ($n -gt 0) {
+            if ($script:meetFillers.ContainsKey($name)) { $script:meetFillers[$name] += $n } else { $script:meetFillers[$name] = $n }
+        }
+    }
+}
+# Trend: one CSV row per meeting -> your progress over time (local file, private).
+function Get-TrendPrev {
+    if (-not (Test-Path $trendCsv)) { return $null }
+    $rows = @(Get-Content $trendCsv | Select-Object -Skip 1 | Where-Object { $_ } | Select-Object -Last 5)
+    if ($rows.Count -eq 0) { return $null }
+    $sh = @(); $fi = @()
+    foreach ($r in $rows) { $c = $r -split ';'; if ($c.Count -ge 4) { $sh += [double]$c[2]; $fi += [double]$c[3] } }
+    if ($sh.Count -eq 0) { return $null }
+    @{ n = $sh.Count
+       share = [math]::Round(($sh | Measure-Object -Average).Average)
+       fill  = [math]::Round(($fi | Measure-Object -Average).Average, 1) }
+}
+function Add-TrendRow([int]$mins, [int]$sharePct, [double]$fillPerMin, [int]$questions, [double]$monologMin) {
+    try {
+        if (-not (Test-Path $trendCsv)) {
+            [System.IO.File]::WriteAllText($trendCsv, "datum;minuter;talandel_pct;utfyllnad_per_min;fragor;langsta_monolog_min`r`n", [System.Text.UTF8Encoding]::new($true))
+        }
+        $row = ('{0};{1};{2};{3};{4};{5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm'), $mins, $sharePct,
+            $fillPerMin.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture), $questions,
+            $monologMin.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))
+        Add-Content -Path $trendCsv -Value $row
+    } catch { Write-Log "trend: $($_.Exception.Message)" }
+}
+# AI coach: gets ONLY your lines + your stats. Decodes the response explicitly as UTF-8
+# (PS 5.1 Invoke-RestMethod mis-decodes JSON bodies as Latin-1).
+function Get-CoachReport([string]$youText, [string]$statsSummary) {
+    $key = Get-GroqKey
+    if (-not $key -or -not $youText) { return $null }
+    if ($youText.Length -gt 12000) { $youText = $youText.Substring(0, 4000) + ' [...] ' + $youText.Substring($youText.Length - 8000) }
+    $sys = 'You are an experienced, direct but friendly sales/communication coach. You receive ONLY the user''s own lines from a meeting (the other side is intentionally excluded) plus speech statistics. Reply in SWEDISH: 3-5 short, concrete coaching points (listening vs talking, questions asked, filler words, one specific exercise for next meeting). No preamble. Max 130 words.'
+    $body = @{ model = $coachModel; temperature = 0.4; max_tokens = 400; messages = @(
+        @{ role = 'system'; content = $sys },
+        @{ role = 'user'; content = "STATISTIK:`n$statsSummary`n`nMINA REPLIKER:`n$youText" }
+    ) } | ConvertTo-Json -Depth 5
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri 'https://api.groq.com/openai/v1/chat/completions' -Method Post `
+        -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json; charset=utf-8' `
+        -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 60
+    $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
+    return $json.choices[0].message.content.Trim()
+}
+
 # Process finished chunk pairs [meetProcessed, upTo): transcribe each stream independently,
 # label (Du/Ovriga), accumulate stats. A stream is deleted ONLY once transcribed or confirmed
 # silent; on a transcription error its audio is KEPT (meetFailed=$true) so nothing is lost.
@@ -568,6 +694,7 @@ function Process-ReadyChunks([int]$upTo) {
         $i = $script:meetProcessed
         $ts = [TimeSpan]::FromSeconds($i * $chunkSec).ToString('hh\:mm\:ss')
         $any = $false
+        $chunkYou = 0.0; $chunkOthers = 0.0
         foreach ($stream in @(
             @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_sys.wav' -f $i)); label = $labelOthers; you = $false },
             @{ wav = (Join-Path $script:meetDir ('chunk_{0:D4}_mic.wav' -f $i)); label = $labelYou;    you = $true  }
@@ -576,8 +703,17 @@ function Process-ReadyChunks([int]$upTo) {
                 $r = Get-ChunkText $stream.wav
                 if ($r) {
                     $script:meetLines.Add("[$ts] $($stream.label): $($r.text)")
-                    if ($stream.you) { $script:meetSecsYou += $r.secs; $script:meetWordsYou += ($r.text -split '\s+').Count }
-                    else { $script:meetSecsOthers += $r.secs; $script:meetWordsOthers += ($r.text -split '\s+').Count }
+                    if ($stream.you) {
+                        $script:meetSecsYou += $r.secs; $script:meetWordsYou += ($r.text -split '\s+').Count
+                        $chunkYou = $r.secs
+                        if ($script:meetAnalysis -ne 'off') {
+                            # Private analysis pass: your questions + a verbatim re-take for filler words.
+                            $script:meetQuestions += ([regex]::Matches($r.text, '\?')).Count
+                            $v = Get-VerbatimText (Join-Path $script:meetDir 'clean.wav')   # clean.wav = this mic chunk
+                            Count-Fillers ($(if ($v) { $v } else { $r.text }))
+                        }
+                    }
+                    else { $script:meetSecsOthers += $r.secs; $script:meetWordsOthers += ($r.text -split '\s+').Count; $chunkOthers = $r.secs }
                     $any = $true
                 }
                 Remove-Item $stream.wav -ErrorAction SilentlyContinue   # transcribed or silent -> safe to drop
@@ -586,6 +722,7 @@ function Process-ReadyChunks([int]$upTo) {
                 Write-Log "chunk ${i} ($($stream.label)): $($_.Exception.Message)"   # keep the audio (not deleted)
             }
         }
+        $script:chunkListYou.Add($chunkYou); $script:chunkListOthers.Add($chunkOthers)   # rolling window + monolog data
         $script:meetProcessed++
         if ($any) { Save-LiveTranscript }
     }
@@ -606,6 +743,32 @@ function Save-LiveTranscript([switch]$final) {
             $body.Add("Ord: ${labelYou} $($script:meetWordsYou)  |  ${labelOthers} $($script:meetWordsOthers)")
             $body.Add("Motets langd: $totalMin min")
         }
+        if ($script:meetAnalysis -ne 'off') {
+            $body.Add(''); $body.Add('-' * 60)
+            $body.Add("Talanalys (privat - endast dina repliker analyserade)")
+            $fTot = 0; foreach ($v in $script:meetFillers.Values) { $fTot += $v }
+            $mins = [math]::Max(0.1, $script:meetSecsYou / 60)
+            $fPerMin = [math]::Round($fTot / $mins, 1)
+            $top = ($script:meetFillers.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 | ForEach-Object { "$($_.Key) ($($_.Value))" }) -join ', '
+            $fLine = "Utfyllnadsord: $fTot st ($fPerMin/min)"
+            if ($top) { $fLine += "  -  mest: $top" }
+            $body.Add($fLine)
+            $body.Add("Fragor stallda: $($script:meetQuestions)")
+            # Longest monolog: consecutive chunks where you talk and the others barely do.
+            $run = 0; $best = 0
+            for ($k = 0; $k -lt $script:chunkListYou.Count; $k++) {
+                if (($script:chunkListYou[$k] -ge 4) -and ($script:chunkListOthers[$k] -le 1.5)) { $run++; if ($run -gt $best) { $best = $run } }
+                else { $run = 0 }
+            }
+            $monoMin = [math]::Round($best * $chunkSec / 60, 1)
+            $body.Add("Langsta monolog: ~$monoMin min")
+            $prev = Get-TrendPrev
+            if ($prev) { $body.Add("Trend (snitt $($prev.n) senaste): talandel $($prev.share)% - utfyllnad $($prev.fill)/min") }
+            if ($script:meetCoach) {
+                $body.Add(''); $body.Add('AI-coach (endast dina repliker skickades):')
+                foreach ($cl in ($script:meetCoach -split "`n")) { $body.Add($cl.TrimEnd()) }
+            }
+        }
         if ($script:meetFailed) { $body.Add(''); $body.Add("OBS: delar kunde inte transkriberas - orort ljud finns kvar i: $($script:meetDir)") }
         if ($script:meetRec -and ($script:meetRec.SysFaulted -or $script:meetRec.MicFaulted)) {
             $body.Add("OBS: en ljudstrom avbrots under motet (enhet urkopplad?) - delar kan saknas.")
@@ -625,6 +788,11 @@ function Start-Meeting {
         $script:meetProcessed = 0; $script:meetBusy = $false; $script:meetFailed = $false
         $script:meetSecsYou = 0.0; $script:meetSecsOthers = 0.0
         $script:meetWordsYou = 0;  $script:meetWordsOthers = 0
+        $script:meetAnalysis = $script:talanalys           # snapshot: mid-meeting toggles apply to the NEXT meeting
+        $script:meetFillers = @{}; $script:meetQuestions = 0; $script:meetCoach = $null
+        $script:chunkListYou = New-Object 'System.Collections.Generic.List[double]'
+        $script:chunkListOthers = New-Object 'System.Collections.Generic.List[double]'
+        $script:crocLastWarn = 0
         $script:meetStart = Get-Date
         $script:meetStamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $script:meetOutFile = Join-Path $outDir ('Mote_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.txt')
@@ -665,7 +833,33 @@ function Stop-Meeting {
             Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
             return
         }
+        if (($script:meetAnalysis -eq 'coach') -and ($script:meetSecsYou -gt 5)) {
+            Set-Status 'AI-coach analyserar...' $icoWork
+            [System.Windows.Forms.Application]::DoEvents()
+            try {
+                $youText = (@($script:meetLines | Where-Object { $_ -match ("\] " + [regex]::Escape($labelYou) + ":") } |
+                    ForEach-Object { ($_ -replace '^\[[0-9:]+\]\s*\S+:\s*', '') })) -join "`n"
+                $tot = $script:meetSecsYou + $script:meetSecsOthers
+                $share = if ($tot -gt 0) { [math]::Round(100 * $script:meetSecsYou / $tot) } else { 0 }
+                $fTot = 0; foreach ($v in $script:meetFillers.Values) { $fTot += $v }
+                $stats = "Talandel: $share% av motet. Fragor stallda: $($script:meetQuestions). Utfyllnadsord: $fTot. Din taltid: $([math]::Round($script:meetSecsYou/60,1)) min."
+                $script:meetCoach = Get-CoachReport $youText $stats
+            } catch { Write-Log "coach: $($_.Exception.Message)" }   # coach failure never blocks the transcript
+        }
         Save-LiveTranscript -final
+        if ($script:meetAnalysis -ne 'off') {
+            $tot = $script:meetSecsYou + $script:meetSecsOthers
+            if ($tot -gt 30) {
+                $share = [math]::Round(100 * $script:meetSecsYou / $tot)
+                $fTot = 0; foreach ($v in $script:meetFillers.Values) { $fTot += $v }
+                $fPerMin = [math]::Round($fTot / [math]::Max(0.1, $script:meetSecsYou / 60), 1)
+                $run = 0; $best = 0
+                for ($k = 0; $k -lt $script:chunkListYou.Count; $k++) {
+                    if (($script:chunkListYou[$k] -ge 4) -and ($script:chunkListOthers[$k] -le 1.5)) { $run++; if ($run -gt $best) { $best = $run } } else { $run = 0 }
+                }
+                Add-TrendRow ([int][math]::Round((New-TimeSpan -Start $script:meetStart -End (Get-Date)).TotalMinutes)) $share $fPerMin $script:meetQuestions ([math]::Round($best * $chunkSec / 60, 1))
+            }
+        }
         if ($script:meetFailed) {
             $tray.ShowBalloonTip(6000, 'Diktatorn', 'Mote delvis transkriberat. Orort ljud sparat i temp (se slutet av filen).', 'Warning')
             # KEEP $meetDir: it holds the chunk audio that failed to transcribe
@@ -692,6 +886,26 @@ $meetTimer.add_Tick({
         $ready = $script:meetRec.ChunkIndex
         if ($script:meetProcessed -lt $ready) {
             Process-ReadyChunks ([math]::Min($ready, $script:meetProcessed + 3))
+        }
+        # Crocodile warning: rolling-window talk share (big mouth, small ears -> listen more).
+        if ($script:meetAnalysis -ne 'off') {
+            $winChunks = [math]::Max(1, [math]::Ceiling($crocWinSec / $chunkSec))
+            $n = $script:chunkListYou.Count
+            if ($n -ge $winChunks) {
+                $y = 0.0; $o = 0.0
+                for ($k = $n - $winChunks; $k -lt $n; $k++) { $y += $script:chunkListYou[$k]; $o += $script:chunkListOthers[$k] }
+                $tot = $y + $o
+                if ($tot -ge $crocMinSpeech) {
+                    $share = 100 * $y / $tot
+                    $now = [Environment]::TickCount
+                    if (($share -ge $crocPct) -and (($now - $script:crocLastWarn) -ge ($crocCooldownSec * 1000))) {
+                        $script:crocLastWarn = $now
+                        $winMin = [math]::Max(1, [int]($crocWinSec / 60))
+                        $tray.ShowBalloonTip(5000, 'Diktatorn', "Krokodilvarning: du har pratat $([math]::Round($share)) % senaste $winMin min. Stor mun, sm${sw_a} ${sw_o}ron - lyssna mer.", 'Warning')
+                        Write-Log ("croc-warning: share=" + [math]::Round($share) + "% window=" + $winChunks + " chunks")
+                    }
+                }
+            }
         }
         $mins = [math]::Round(((Get-Date) - $script:meetStart).TotalMinutes)
         Set-Status "MOTE $mins min - $($script:meetLines.Count) rader (live)" $icoMeet

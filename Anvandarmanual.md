@@ -70,6 +70,21 @@ Talfördelning: Du 12,4 min (38%)  |  Övriga 20,1 min (62%)
 > ⚠️ Informera alltid deltagarna om att mötet spelas in/transkriberas. För känsliga möten: använd
 > **Lokal** transkribering (se punkt 5), så lämnar ljudet aldrig din dator.
 
+### Talanalys (valfritt): coacha dig själv, inte de andra
+Slå på under **tray-ikonen → Talanalys (privat, bara du)**. Analysen tittar **enbart på dina egna
+repliker** – aldrig på motpartens.
+
+| Läge | Vad du får |
+|------|-----------|
+| **Av** (standard) | Ingen analys alls. |
+| **Statistik + krokodilvarning** | Helt lokalt: räknar dina utfyllnadsord ("typ", "liksom", "alltså", "eh"...), frågor du ställer och din längsta monolog. Under mötet får du en diskret **krokodilvarning** om du pratat mer än 70 % de senaste 10 minuterna. Stor mun, små öron – lyssna mer. |
+| **Statistik + AI-coach** | Som ovan, plus en kort AI-coachrapport efter mötet (via Groq, kräver API-nyckel). Endast **dina** repliker skickas – motpartens ord lämnar aldrig datorn. |
+
+Resultatet läggs längst ner i mötestranskriptet. Dessutom sparas en trendfil
+(`Dokument\Transcriptions\talanalys-trend.csv`) så du ser din utveckling över tid – talandel,
+utfyllnadsord per minut, frågor. Transkriptet du läser är alltid städat; analysen tittar på
+råversionen av ditt tal under huven.
+
 ---
 
 ## 4. Tray-menyn (högerklicka ikonen)

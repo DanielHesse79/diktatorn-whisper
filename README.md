@@ -22,6 +22,11 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   chunks with **speaker labels** (`Du:` = you, `Övriga:` = the others — the label is simply which stream
   the audio came from, no ML diarization needed). The transcript file grows live (tray → *Visa transkript*),
   and **talk-time stats** (minutes + % per side) are appended on stop.
+- **Private speech analysis** (optional, analyzes ONLY your own lines, never the other side):
+  filler-word counting ("typ", "liksom", "eh"...), questions asked, longest monologue, a per-meeting
+  trend CSV, a live **crocodile warning** when you've talked >70% of the last 10 minutes (big mouth,
+  small ears), and an optional **AI coach report** (Groq LLM, same free key) appended to the transcript.
+  The visible transcript stays clean; the analysis runs on a verbatim pass under the hood.
 - **Local or cloud** transcription, switchable in the tray:
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for
