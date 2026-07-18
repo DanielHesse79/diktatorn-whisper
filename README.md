@@ -41,7 +41,11 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for
     laptops / weak GPUs. (Free tier: 2,000 requests/day.)
-- **Tray menu**: pick microphone, pick model (base/small/medium = speed vs accuracy), pick backend.
+- **Tray menu**: pick microphone, pick model (base/small/medium = speed vs accuracy), pick backend, and
+  pick the **GPU** when the machine has more than one. This matters more than it sounds: DirectX often
+  enumerates the integrated GPU first, and blindly taking it measured **0.3x realtime on an integrated
+  Radeon versus 10.9x on the discrete RTX beside it** — a 34x difference on identical audio. Diktatorn
+  now prefers a discrete card automatically.
 - **Types Unicode** via `SendInput`, so åäö and friends come out right.
 - Auto-detects your GPU; remembers your choices between restarts.
 

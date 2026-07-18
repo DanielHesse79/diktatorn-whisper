@@ -154,6 +154,7 @@ försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råka
 | **Mötestranskribering** | **Live** (texten växer under mötet) eller **Efter mötet** (spelar bara in under mötet och transkriberar allt när du trycker stopp – skonsamt för klenare datorer; krokodilvarningen fungerar ändå). Installationen mäter din dators hastighet och väljer rätt läge automatiskt – se `Diktatorn-rekommendation.txt` i programmappen. |
 | **Mikrofon** | Välj vilken mikrofon dikteringen lyssnar på. Välj ditt headset, inte t.ex. webbkameran. |
 | **Modell** | Snabbhet vs noggrannhet (se punkt 5). |
+| **Grafikkort** | Visas bara om datorn har flera. Lokal transkribering körs på valt kort – välj alltid det **dedikerade** (t.ex. NVIDIA GeForce), aldrig det integrerade. Skillnaden är dramatisk: på en testmaskin gav det integrerade kortet 0,3x realtid och det dedikerade 10,9x – 34 gånger snabbare. Diktatorn väljer dedikerat kort automatiskt, men här kan du styra om. |
 | **Transkribering** | Växla mellan **Lokal** (din dator, privat) och **Groq moln** (snabbt, se punkt 6). |
 | **Ange Groq API-nyckel** | Klistra in din gratis molnnyckel (se punkt 6). |
 | **Avsluta** | Stänger Diktatorn. |

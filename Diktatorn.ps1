@@ -376,9 +376,29 @@ Add-Type -TypeDefinition $csCloud -ReferencedAssemblies System.Net.Http
 
 # --- Model loading (selectable: base=fast, small=balanced, medium=accurate) ---
 Import-Module $modulePsd 3>$null
-# Auto-detect a real GPU (skip the software "Basic Render Driver"); fall back to the first adapter.
-$adapter = @(Get-Adapters | Where-Object { $_ -notlike '*Basic Render*' })[0]
-if (-not $adapter) { $adapter = @(Get-Adapters)[0] }
+# GPU choice matters enormously: on a laptop/desktop with both an integrated and a
+# discrete GPU, DirectX often lists the integrated one first. Taking [0] blindly
+# measured 0.3x realtime on an integrated Radeon versus 10.9x on the discrete
+# RTX beside it — a 34x difference, and the reason local mode felt unusable.
+# Prefer a discrete card; let diktatorn-gpu.txt override.
+$gpuCfg = Join-Path $root 'diktatorn-gpu.txt'
+$script:adapters = @(Get-Adapters | Where-Object { $_ -notlike '*Basic Render*' })
+if (-not $script:adapters) { $script:adapters = @(Get-Adapters) }
+function Resolve-Adapter {
+    if (Test-Path $gpuCfg) {
+        $saved = (Get-Content $gpuCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        $hit = @($script:adapters | Where-Object { $_ -eq $saved })[0]
+        if ($hit) { return $hit }
+    }
+    # Discrete cards first (their names carry a model line); generic "AMD Radeon(TM)
+    # Graphics" / "Intel UHD" style names are integrated.
+    $disc = @($script:adapters | Where-Object { $_ -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Radeon (RX|Pro)|Arc' })[0]
+    if ($disc) { return $disc }
+    return $script:adapters[0]
+}
+$script:adapter = Resolve-Adapter
+$adapter = $script:adapter
+Write-Log "GPU: $adapter  (tillgangliga: $($script:adapters -join ', '))"
 $modelCfg     = Join-Path $root 'diktatorn-model.txt'
 $modelDir     = Join-Path $root 'Models'
 $modelChoices = [ordered]@{ 'Snabb (base)' = 'ggml-base.bin'; 'Balanserad (small)' = 'ggml-small.bin'; 'Noggrann (medium)' = 'ggml-medium.bin' }
@@ -394,7 +414,7 @@ if (-not (Test-Path $warm)) {
     $sp.SetOutputToWaveFile($warm); $sp.Speak('uppvarmning'); $sp.Dispose()
 }
 function Reload-Model([string]$file) {
-    $script:model = Import-WhisperModel -path (Join-Path $modelDir $file) -adapter $adapter
+    $script:model = Import-WhisperModel -path (Join-Path $modelDir $file) -adapter $script:adapter
     $script:modelFile = $file
     try { $null = Transcribe-File -model $script:model -path $warm -language $language } catch {}
 }
@@ -585,6 +605,33 @@ foreach ($label in $modelChoices.Keys) {
     $script:modelMenuItems += $item
 }
 [void]$menu.Items.Add($miModel)
+if ($script:adapters.Count -gt 1) {
+    $miGpu = New-Object System.Windows.Forms.ToolStripMenuItem 'Grafikkort (lokal transkribering)'
+    $script:gpuMenuItems = @()
+    foreach ($a in $script:adapters) {
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem $a
+        $item.Tag = $a
+        $item.Checked = ($a -eq $script:adapter)
+        $item.add_Click({
+            $chosen = [string]$this.Tag
+            try { [System.IO.File]::WriteAllText($gpuCfg, $chosen) } catch {}
+            $script:adapter = $chosen
+            foreach ($it in $script:gpuMenuItems) { $it.Checked = ($it.Tag -eq $chosen) }
+            Set-Status 'byter grafikkort...' $icoWork
+            try {
+                Reload-Model $script:modelFile
+                $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info')
+            } catch {
+                Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
+                $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte anvanda $chosen", 'Error')
+            }
+            Set-Status 'redo' $icoIdle
+        })
+        [void]$miGpu.DropDownItems.Add($item)
+        $script:gpuMenuItems += $item
+    }
+    [void]$menu.Items.Add($miGpu)
+}
 $miBackend = New-Object System.Windows.Forms.ToolStripMenuItem 'Transkribering (lokal / moln)'
 $script:backendMenuItems = @()
 foreach ($b in @(@{t='local'; l='Lokal (GPU, privat)'}, @{t='groq'; l='Groq moln (snabbt)'})) {
