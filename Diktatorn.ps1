@@ -384,15 +384,18 @@ Import-Module $modulePsd 3>$null
 $gpuCfg = Join-Path $root 'diktatorn-gpu.txt'
 $script:adapters = @(Get-Adapters | Where-Object { $_ -notlike '*Basic Render*' })
 if (-not $script:adapters) { $script:adapters = @(Get-Adapters) }
+# A discrete card names its model line; integrated ones are generic
+# ("AMD Radeon(TM) Graphics", "Intel(R) UHD Graphics").
+function Test-DiscreteAdapter([string]$name) {
+    return ($name -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Radeon (RX|Pro)|Arc\b')
+}
 function Resolve-Adapter {
     if (Test-Path $gpuCfg) {
         $saved = (Get-Content $gpuCfg -Raw -ErrorAction SilentlyContinue).Trim()
         $hit = @($script:adapters | Where-Object { $_ -eq $saved })[0]
         if ($hit) { return $hit }
     }
-    # Discrete cards first (their names carry a model line); generic "AMD Radeon(TM)
-    # Graphics" / "Intel UHD" style names are integrated.
-    $disc = @($script:adapters | Where-Object { $_ -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Radeon (RX|Pro)|Arc' })[0]
+    $disc = @($script:adapters | Where-Object { Test-DiscreteAdapter $_ })[0]
     if ($disc) { return $disc }
     return $script:adapters[0]
 }
@@ -620,7 +623,11 @@ if ($script:adapters.Count -gt 1) {
             Set-Status 'byter grafikkort...' $icoWork
             try {
                 Reload-Model $script:modelFile
-                $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info')
+                if (Test-DiscreteAdapter $chosen) {
+                    $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info')
+                } else {
+                    $tray.ShowBalloonTip(7000, 'Diktatorn', "Anvander nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket langsam.", 'Warning')
+                }
             } catch {
                 Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
                 $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte anvanda $chosen", 'Error')
@@ -1337,6 +1344,22 @@ foreach ($h in @(
 }
 if ($hkFailed.Count -gt 0) {
     $tray.ShowBalloonTip(6000, 'Diktatorn', "Dessa kortkommandon ar upptagna av en annan app och fungerar inte:`n" + ($hkFailed -join "`n"), 'Warning')
+}
+# Integrated graphics run Whisper roughly 30x slower than a discrete card
+# (measured: 0.3x vs 10.9x realtime on the same clip), which makes local mode
+# feel broken rather than slow. Say so, and say what to do about it.
+if (-not (Test-DiscreteAdapter $script:adapter)) {
+    $better = @($script:adapters | Where-Object { Test-DiscreteAdapter $_ })[0]
+    if ($better) {
+        $tray.ShowBalloonTip(9000, 'Diktatorn',
+            "Lokal transkribering kor pa integrerad grafik ($script:adapter) och blir da mycket langsam.`n`nDu har $better - valj det under Grafikkort i menyn.",
+            'Warning')
+    } else {
+        $tray.ShowBalloonTip(9000, 'Diktatorn',
+            "Inget dedikerat grafikkort hittades - lokal transkribering blir langsam pa $script:adapter.`n`nVal Groq moln under Transkribering for snabbare resultat.",
+            'Warning')
+    }
+    Write-Log "VARNING: integrerad grafik i bruk ($script:adapter)"
 }
 $script:pttSuppressed = $false
 $hk.add_HotkeyPressed({
