@@ -37,6 +37,10 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   `Documents\SalesScripts`. Headings become sections, bullets become checkboxes. During a **live**
   meeting the items **check themselves off** as you cover them — the coach engine matches each new
   transcript chunk against the remaining items — and the footer shows progress plus your live talk share.
+- **Script manager**: list, edit, duplicate and delete scripts in-app, or **generate one with AI** from a
+  one-line brief ("first call with an IT manager at a mid-size manufacturer, selling automated reporting")
+  and **improve** an existing one on request. Uses the same pluggable engine as the coach, so picking
+  Ollama keeps your deal descriptions on the machine. Scripts stay plain `.md` files — editable anywhere.
 - **Local or cloud** transcription, switchable in the tray:
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for

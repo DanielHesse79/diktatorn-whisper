@@ -120,8 +120,26 @@ tray-menyn → **Öppna dagens journal**.
 
 ## 3c. Sälj-script – checklista som bockar av sig själv
 
-Lägg dina förberedda samtalsmallar som `.md`-filer i `Dokument\SalesScripts`. Ett exempel
-(`exempel-saljsamtal.md`) ligger redan där. Formatet är vanlig markdown:
+Tray-menyn → **Sälj-script** öppnar scripthanteraren: alla dina script i en lista till vänster,
+texten redigerbar till höger.
+
+| Knapp | Vad den gör |
+|-------|-------------|
+| **Spara** | Sparar ändringarna i det öppna scriptet. |
+| **Nytt** | Skapar ett tomt script med grundstruktur. |
+| **Generera med AI** | Beskriv mötet – *"första möte med IT-chef på industribolag, vi säljer automatiserad rapportering"* – så skriver AI:n ett komplett script åt dig. |
+| **Förbättra** | Låter AI:n skärpa det öppna scriptet. Säg vad som saknas, t.ex. *"fler frågor om budget"*. |
+| **Kopiera** / **Ta bort** | Duplicera eller radera. |
+| **Använd i samtal** | Öppnar checklistan (fönstret som lägger sig överst under samtalet). |
+
+AI-knapparna använder samma motor som talanalysen (Groq/Ollama/OpenRouter). Välj **Ollama** om du
+vill att beskrivningarna av dina affärer stannar på datorn.
+
+> Granska alltid ett AI-genererat script innan du använder det skarpt. Det blir en bra grund,
+> men det vet inget om just din produkt eller din kund.
+
+Scripten är vanliga `.md`-filer i `Dokument\SalesScripts`, så du kan lika gärna redigera dem i
+valfri editor eller dela dem med en kollega. Formatet är vanlig markdown:
 
 ```markdown
 ## Behovsanalys
