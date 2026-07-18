@@ -30,6 +30,13 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   from 1 to 3"). The coach engine is pluggable: **Groq** (free, default), **Ollama** (fully local), or
   **OpenRouter** (any model you like) — all via the same OpenAI-protocol call. The visible transcript
   stays clean; the analysis runs on a verbatim pass under the hood.
+- **Voice journal** (`Ctrl+Shift+N`): speak a note and it's appended — with a timestamp heading — to
+  `Documents\Journal\YYYY-MM-DD.md` instead of being typed at the cursor. Near-silent takes are
+  rejected (measured RMS gate) so a mis-press never writes a Whisper-hallucinated entry into your journal.
+- **Sales script screen**: a small always-on-top checklist built from a markdown file in
+  `Documents\SalesScripts`. Headings become sections, bullets become checkboxes. During a **live**
+  meeting the items **check themselves off** as you cover them — the coach engine matches each new
+  transcript chunk against the remaining items — and the footer shows progress plus your live talk share.
 - **Local or cloud** transcription, switchable in the tray:
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for
@@ -82,7 +89,9 @@ The installer downloads everything that can't be redistributed here:
 |---|---|
 | Dictate (push-to-talk) | Hold **Ctrl+Shift**, speak, release |
 | Dictate (toggle) | **Ctrl+Shift+D** to start/stop |
+| Journal note | **Ctrl+Shift+N** to start/stop |
 | Record a meeting | **Ctrl+Shift+M** (or tray menu) to start/stop |
+| Open sales script | Tray → *Sälj-script* |
 | Pick mic / model / backend | Right-click the tray icon |
 | Quit | Right-click → Avsluta |
 

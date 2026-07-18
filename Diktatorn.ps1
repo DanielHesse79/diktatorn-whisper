@@ -26,7 +26,10 @@ $adapter   = $null   # GPU adapter, auto-detected after the WhisperPS module loa
 $language  = 'sv'    # dictation language (meetings auto-detect)
 $chunkSec  = if ($env:DIKTATORN_CHUNK_SEC) { [int]$env:DIKTATORN_CHUNK_SEC } else { 30 }   # meeting chunk length (30 s = Whisper's native window)
 $outDir    = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'Transcriptions'
+$journalDir = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'Journal'
+$scriptsDir = Join-Path ([System.Environment]::GetFolderPath('MyDocuments')) 'SalesScripts'
 $tmpDict   = Join-Path $env:TEMP 'whisprflow_dict.wav'
+$tmpJournal = Join-Path $env:TEMP 'whisprflow_journal.wav'
 $logFile   = Join-Path $env:TEMP 'diktatorn.log'
 $micCfg    = Join-Path $root 'diktatorn-mic.txt'   # remembers which microphone to use
 $preferMic = 'USB PnP Sound Device'                # default mic (substring match), not the room/camera
@@ -34,6 +37,12 @@ $backendCfg = Join-Path $root 'diktatorn-backend.txt'   # 'local' or 'groq'
 $groqKeyFile = Join-Path $root 'diktatorn-groq.txt'     # Groq API key (plaintext, local only)
 $groqModel  = 'whisper-large-v3-turbo'
 New-Item -ItemType Directory -Force $outDir | Out-Null
+New-Item -ItemType Directory -Force $journalDir | Out-Null
+New-Item -ItemType Directory -Force $scriptsDir | Out-Null
+if (-not (Get-ChildItem $scriptsDir -Filter '*.md' -ErrorAction SilentlyContinue)) {
+    $exampleScript = Join-Path $root 'exempel-saljsamtal.md'
+    if (Test-Path $exampleScript) { Copy-Item $exampleScript $scriptsDir -ErrorAction SilentlyContinue }
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # --- Talanalys (private speech analysis; only YOUR mic lines are ever analyzed) ---
@@ -304,6 +313,19 @@ public static class AudioPrep {
             }
         }
     }
+    // Loudness of a 16-bit PCM file, 0..1. Room noise measures ~0.004 (-48 dB);
+    // real speech ~0.10 (-20 dB). Used to reject near-silent takes before they
+    // reach Whisper, which otherwise invents plausible sentences out of hiss.
+    public static double Rms(string path) {
+        using (var reader = new AudioFileReader(path)) {
+            float[] buf = new float[16000];
+            double sum = 0; long n = 0; int read;
+            while ((read = reader.Read(buf, 0, buf.Length)) > 0) {
+                for (int i = 0; i < read; i++) { sum += (double)buf[i] * buf[i]; n++; }
+            }
+            return n > 0 ? Math.Sqrt(sum / n) : 0.0;
+        }
+    }
 }
 "@
 Add-Type -TypeDefinition $csPrep -ReferencedAssemblies $naudioDll
@@ -524,13 +546,21 @@ $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon = $icoIdle; $tray.Text = 'Diktatorn - redo'; $tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$miInfo = $menu.Items.Add('Hall Ctrl+Shift = diktera  |  Ctrl+Shift+D = toggel'); $miInfo.Enabled = $false
+$miInfo = $menu.Items.Add('Ctrl+Shift = diktera  |  +D toggel  |  +N journal  |  +M mote'); $miInfo.Enabled = $false
 $miStats = $menu.Items.Add('Talhastighet: - '); $miStats.Enabled = $false
 [void]$menu.Items.Add('-')
 $miMeeting = $menu.Items.Add('Starta motesinspelning (Ctrl+Shift+M)')
 $miOpenLive = $menu.Items.Add('Visa transkript (live)')
 $miOpenLive.Enabled = $false
 $miOpenLive.add_Click({ if ($script:meetOutFile -and (Test-Path $script:meetOutFile)) { Invoke-Item $script:meetOutFile } })
+$miJournal = $menu.Items.Add('Oppna dagens journal')
+$miJournal.add_Click({
+    $f = Join-Path $journalDir ((Get-Date -Format 'yyyy-MM-dd') + '.md')
+    if (Test-Path $f) { Invoke-Item $f }
+    else { $tray.ShowBalloonTip(2500, 'Diktatorn', 'Ingen journal idag an. Tryck Ctrl+Shift+N och prata.', 'Info') }
+})
+$miScript = $menu.Items.Add('Salj-script...')
+$miScript.add_Click({ Open-ScriptPicker })
 [void]$menu.Items.Add('-')
 $miMic = New-Object System.Windows.Forms.ToolStripMenuItem 'Mikrofon (diktering)'
 $script:micMenuItems = @()
@@ -701,6 +731,130 @@ function Stop-Dictation {
         $tray.ShowBalloonTip(3000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error')
     }
     finally { Set-Status 'redo' $icoIdle }
+}
+
+# --- Journal: dictate a note -> appended to today's journal file (never typed at the cursor) ---
+$script:journaling = $false
+function Start-Journal {
+    if ($script:meeting -or $script:meetFinishing -or $script:dictating) { return }
+    Remove-Item $tmpJournal -ErrorAction SilentlyContinue
+    if (-not $script:micRec.Start($tmpJournal, $script:micDevice)) {
+        Write-Log 'Start-Journal: mic could not be opened'
+        $tray.ShowBalloonTip(3000, 'Diktatorn', 'Mikrofonen kunde inte oppnas.', 'Warning')
+        return
+    }
+    $script:journaling = $true
+    Set-Status 'SPELAR IN (journal)...' $icoRec
+}
+function Stop-Journal {
+    $script:journaling = $false
+    Set-Status 'transkriberar journal...' $icoWork
+    $script:micRec.Stop()
+    [System.Windows.Forms.Application]::DoEvents()
+    try {
+        # Whisper invents plausible sentences out of near-silence, so a mis-press would
+        # otherwise write a fabricated entry into a personal journal. Gate on actually
+        # voiced audio, same guard the meeting chunks use.
+        $cleanJ = Join-Path $env:TEMP 'whisprflow_journal_clean.wav'
+        [AudioPrep]::Clean($tmpJournal, $cleanJ)
+        $rmsJ = if (Test-Path $cleanJ) { [AudioPrep]::Rms($cleanJ) } else { 0 }
+        # 0.01 = -40 dB, comfortably between measured room noise (~-49 dB) and speech (~-20 dB)
+        if (-not (Test-Path $cleanJ) -or ((Get-Item $cleanJ).Length -lt 16000) -or ($rmsJ -lt 0.01)) {
+            Write-Log ("Journal: for tyst (rms {0:N4}) - ingen anteckning" -f $rmsJ)
+            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget tal hordes - ingen anteckning sparad.', 'Info')
+            return
+        }
+        $text = Get-TranscriptText $cleanJ
+        if ($text) {
+            $file = Join-Path $journalDir ((Get-Date -Format 'yyyy-MM-dd') + '.md')
+            if (-not (Test-Path $file)) {
+                [System.IO.File]::WriteAllText($file, ('# Journal ' + (Get-Date -Format 'yyyy-MM-dd') + "`r`n"), [System.Text.UTF8Encoding]::new($true))
+            }
+            Add-Content -Path $file -Value ("`r`n## " + (Get-Date -Format 'HH:mm') + "`r`n`r`n" + $text) -Encoding UTF8
+            $tray.ShowBalloonTip(2000, 'Diktatorn', 'Journalanteckning sparad.', 'Info')
+        }
+    } catch {
+        Write-Log "Stop-Journal: $($_.Exception.Message)"
+        $tray.ShowBalloonTip(3000, 'Diktatorn', "Fel: $($_.Exception.Message)", 'Error')
+    }
+    finally { Set-Status 'redo' $icoIdle }
+}
+
+# --- Sales script screen: always-on-top checklist guiding a prepared call. Items are
+# checked manually, or AUTOMATICALLY during a live meeting: new transcript chunks are
+# matched against unchecked items by the coach engine ("Budget? -> covered").
+$script:scriptForm = $null
+$script:scriptChecks = @()
+$script:scriptLastLine = 0
+
+function Parse-SalesScript([string]$path) {
+    $items = @()
+    foreach ($line in (Get-Content $path -Encoding UTF8)) {
+        $t = $line.Trim()
+        if (-not $t) { continue }
+        if ($t -match '^#{1,3}\s*(.+)$') { $items += @{ kind = 'section'; text = $Matches[1].Trim() } }
+        elseif ($t -match '^[-*]\s*(?:\[[ xX]\]\s*)?(.+)$') { $items += @{ kind = 'item'; text = $Matches[1].Trim() } }
+    }
+    return ,$items
+}
+
+function Open-ScriptWindow([string]$path) {
+    if ($script:scriptForm -and -not $script:scriptForm.IsDisposed) { $script:scriptForm.Close() }
+    $items = Parse-SalesScript $path
+    if (@($items).Count -eq 0) {
+        $tray.ShowBalloonTip(3000, 'Diktatorn', 'Scriptet ar tomt. Anvand ## rubriker och - punkter.', 'Warning')
+        return
+    }
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = 'Saljscript - ' + [System.IO.Path]::GetFileNameWithoutExtension($path)
+    $f.TopMost = $true
+    $f.Size = New-Object System.Drawing.Size(390, 580)
+    $f.StartPosition = 'Manual'
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $f.Location = New-Object System.Drawing.Point(($wa.Right - 410), 60)
+    $f.FormBorderStyle = 'SizableToolWindow'
+    $status = New-Object System.Windows.Forms.Label
+    $status.Dock = 'Bottom'; $status.Height = 22
+    $status.Text = 'Manuell avbockning - auto nar mote kor live.'
+    $panel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $panel.Dock = 'Fill'; $panel.FlowDirection = 'TopDown'; $panel.WrapContents = $false
+    $panel.AutoScroll = $true; $panel.Padding = '8,8,8,8'
+    $script:scriptChecks = @()
+    foreach ($it in $items) {
+        if ($it.kind -eq 'section') {
+            $l = New-Object System.Windows.Forms.Label
+            $l.Text = $it.text; $l.AutoSize = $true
+            $l.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+            $l.Margin = '0,10,0,2'
+            [void]$panel.Controls.Add($l)
+        } else {
+            $cb = New-Object System.Windows.Forms.CheckBox
+            $cb.Text = $it.text; $cb.AutoSize = $true
+            $cb.MaximumSize = New-Object System.Drawing.Size(340, 0)
+            $cb.Margin = '12,2,0,2'
+            [void]$panel.Controls.Add($cb)
+            $script:scriptChecks += $cb
+        }
+    }
+    $f.Controls.Add($panel); $f.Controls.Add($status)
+    $script:scriptForm = $f
+    $script:scriptStatus = $status
+    $script:scriptLastLine = 0
+    $f.Show()
+}
+
+function Open-ScriptPicker {
+    $files = @(Get-ChildItem $scriptsDir -Filter '*.md' -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) {
+        $tray.ShowBalloonTip(4000, 'Diktatorn', 'Inga script funna. Lagg .md-filer i mappen som oppnas nu.', 'Info')
+        Invoke-Item $scriptsDir
+        return
+    }
+    if ($files.Count -eq 1) { Open-ScriptWindow $files[0].FullName; return }
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.InitialDirectory = $scriptsDir
+    $dlg.Filter = 'Markdown (*.md)|*.md'
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Open-ScriptWindow $dlg.FileName }
 }
 
 # --- Meeting: chunked dual-stream -> continuous labeled transcript + talk-time stats ---
@@ -1089,6 +1243,29 @@ $meetTimer.add_Tick({
                 }
             }
         }
+        # Sales-script auto-check: match new transcript lines against unchecked items.
+        if ($script:scriptForm -and -not $script:scriptForm.IsDisposed -and ($script:meetLines.Count -gt $script:scriptLastLine)) {
+            $newText = (@($script:meetLines | Select-Object -Skip $script:scriptLastLine) -join "`n")
+            $script:scriptLastLine = $script:meetLines.Count
+            $open = @($script:scriptChecks | Where-Object { -not $_.Checked })
+            if ($open.Count -gt 0 -and (Get-CoachKey $script:coach)) {
+                try {
+                    $numbered = @(); for ($k = 0; $k -lt $open.Count; $k++) { $numbered += ('{0}. {1}' -f ($k + 1), $open[$k].Text) }
+                    $ans = Invoke-CoachLLM 'You match sales-call checklist items against a conversation snippet (Swedish or English). Reply ONLY with comma-separated numbers of the items that are clearly covered/addressed in the snippet, or NONE. Be conservative: only mark items genuinely discussed.' ("CHECKLIST:`n" + ($numbered -join "`n") + "`n`nSNIPPET:`n" + $newText)
+                    if ($ans -notmatch 'NONE') {
+                        foreach ($m in [regex]::Matches($ans, '\d+')) {
+                            $ix = [int]$m.Value - 1
+                            if ($ix -ge 0 -and $ix -lt $open.Count) { $open[$ix].Checked = $true }
+                        }
+                    }
+                    $done = @($script:scriptChecks | Where-Object { $_.Checked }).Count
+                    $st = "Avklarat: $done/$($script:scriptChecks.Count)"
+                    $tot0 = $script:meetSecsYou + $script:meetSecsOthers
+                    if ($tot0 -gt 30) { $st += "  |  din talandel: $([math]::Round(100 * $script:meetSecsYou / $tot0))%" }
+                    $script:scriptStatus.Text = $st
+                } catch { Write-Log "script-check: $($_.Exception.Message)" }
+            }
+        }
         $mins = [math]::Round(((Get-Date) - $script:meetStart).TotalMinutes)
         if ($script:meetModeActive -eq 'deferred') { Set-Status "MOTE $mins min - spelar in (transkriberas efter motet)" $icoMeet }
         else { Set-Status "MOTE $mins min - $($script:meetLines.Count) rader (live)" $icoMeet }
@@ -1098,14 +1275,29 @@ $meetTimer.add_Tick({
 
 # --- Hotkeys: 1 = dictation toggle (Ctrl+Shift+D), 2 = meeting toggle (Ctrl+Shift+M) ---
 $hk = New-Object WfNative
-[void]$hk.Register(1, [uint32]6, [uint32]0x44)   # Ctrl+Shift+D
-[void]$hk.Register(2, [uint32]6, [uint32]0x4D)   # Ctrl+Shift+M
+# RegisterHotKey fails if another app already owns the combo. Swallowing that
+# (a bare [void]) makes the key silently dead — report it instead.
+$hkFailed = @()
+foreach ($h in @(
+    @{ id = 1; vk = 0x44; name = 'Ctrl+Shift+D (diktering)' },
+    @{ id = 2; vk = 0x4D; name = 'Ctrl+Shift+M (mote)' },
+    @{ id = 3; vk = 0x4E; name = 'Ctrl+Shift+N (journal)' }
+)) {
+    if (-not $hk.Register($h.id, [uint32]6, [uint32]$h.vk)) {
+        $hkFailed += $h.name
+        Write-Log "Hotkey upptagen av annan app: $($h.name)"
+    }
+}
+if ($hkFailed.Count -gt 0) {
+    $tray.ShowBalloonTip(6000, 'Diktatorn', "Dessa kortkommandon ar upptagna av en annan app och fungerar inte:`n" + ($hkFailed -join "`n"), 'Warning')
+}
 $script:pttSuppressed = $false
 $hk.add_HotkeyPressed({
     param($id)
     $script:pttSuppressed = $true   # a combo with a letter fired; block push-to-talk until modifiers released
-    if ($id -eq 1) { if (-not $script:meeting -and -not $script:meetFinishing) { if ($script:dictating) { Stop-Dictation } else { [void](Start-Dictation) } } }
+    if ($id -eq 1) { if (-not $script:meeting -and -not $script:meetFinishing -and -not $script:journaling) { if ($script:dictating) { Stop-Dictation } else { [void](Start-Dictation) } } }
     elseif ($id -eq 2) { if ($script:meeting) { Stop-Meeting } else { Start-Meeting } }
+    elseif ($id -eq 3) { if ($script:journaling) { Stop-Journal } else { Start-Journal } }
 })
 
 # --- Push-to-talk: poll Ctrl+Shift held (no other letter) for >threshold ---
@@ -1118,7 +1310,7 @@ $timer.Interval = 40
 $timer.add_Tick({
     $both = ([WfNative]::IsDown($VK_CONTROL)) -and ([WfNative]::IsDown($VK_SHIFT))
     if ($both) {
-        if ($script:meeting -or $script:meetFinishing -or $script:pttSuppressed) { return }
+        if ($script:meeting -or $script:meetFinishing -or $script:journaling -or $script:pttSuppressed) { return }
         if ($script:pttActive) { return }
         if (-not $script:dictating) {
             if ($script:pttCandidateTick -eq 0) { $script:pttCandidateTick = [Environment]::TickCount }
@@ -1143,7 +1335,8 @@ $miMeeting.add_Click({ if ($script:meeting) { Stop-Meeting } else { Start-Meetin
 $miQuit.add_Click({
     try { $timer.Stop() } catch {}
     try { if ($script:meeting) { Stop-Meeting } } catch {}   # finish + save the transcript, don't lose it
-    try { if ($script:dictating) { $script:micRec.Stop() } } catch {}
+    try { if ($script:dictating -or $script:journaling) { $script:micRec.Stop() } } catch {}
+    try { if ($script:scriptForm -and -not $script:scriptForm.IsDisposed) { $script:scriptForm.Close() } } catch {}
     $hk.Dispose(); $tray.Visible = $false; $appContext.ExitThread()
 })
 

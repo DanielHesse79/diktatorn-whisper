@@ -103,6 +103,45 @@ Standardmodell per motor kan bytas genom att skriva ett modellnamn i filen
 
 ---
 
+## 3b. Journal – prata in dagboken
+
+Tryck **Ctrl+Shift+N**, prata, tryck igen. Texten skrivs **inte** vid markören utan läggs till i
+dagens fil: `Dokument\Journal\ÅÅÅÅ-MM-DD.md`, med klockslag som rubrik. Flera anteckningar samma
+dag hamnar under varandra i samma fil.
+
+Bra till reflektioner efter ett möte, idéer i bilen, eller dagens lärdomar. Öppna dagens fil via
+tray-menyn → **Öppna dagens journal**.
+
+> Hör Diktatorn inget tal (du råkade trycka, eller mikrofonen var avstängd) sparas **ingen**
+> anteckning – du får meddelandet *"Inget tal hördes"*. Det är medvetet: en påhittad anteckning
+> i din journal vore värre än ingen alls.
+
+---
+
+## 3c. Sälj-script – checklista som bockar av sig själv
+
+Lägg dina förberedda samtalsmallar som `.md`-filer i `Dokument\SalesScripts`. Ett exempel
+(`exempel-saljsamtal.md`) ligger redan där. Formatet är vanlig markdown:
+
+```markdown
+## Behovsanalys
+- Vad är den största utmaningen just nu?
+- Hur löser ni det idag?
+```
+
+Rubriker (`##`) blir avsnitt, punkter (`-`) blir kryssrutor. Öppna via tray-menyn →
+**Sälj-script**. Fönstret lägger sig överst i högra hörnet så du ser det under samtalet.
+
+**Det smarta:** kör du samtidigt en **mötesinspelning i live-läge** bockas punkterna av
+automatiskt allt eftersom ni pratar – frågar du om budget bockas "Finns budget avsatt?" av av sig
+självt. Längst ner ser du hur många punkter du klarat av och din aktuella talandel. Du kan alltid
+bocka manuellt också.
+
+Automatiken använder samma coach-motor som talanalysen (Groq/Ollama/OpenRouter) och är medvetet
+försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råkar nämnas i förbifarten.
+
+---
+
 ## 4. Tray-menyn (högerklicka ikonen)
 
 | Val | Vad det gör |
@@ -110,6 +149,8 @@ Standardmodell per motor kan bytas genom att skriva ett modellnamn i filen
 | **Talhastighet** | Visar hur snabbt du pratar (tecken/min + ord/min) och ett snitt för sessionen. |
 | **Starta mötesinspelning** | Samma som Ctrl+Shift+M. |
 | **Visa transkript (live)** | Öppnar det växande transkriptet medan mötet pågår. |
+| **Öppna dagens journal** | Öppnar dagens journalfil (se punkt 3b). |
+| **Sälj-script** | Öppnar en checklista som guidar dig genom ett förberett säljsamtal (se punkt 3c). |
 | **Mötestranskribering** | **Live** (texten växer under mötet) eller **Efter mötet** (spelar bara in under mötet och transkriberar allt när du trycker stopp – skonsamt för klenare datorer; krokodilvarningen fungerar ändå). Installationen mäter din dators hastighet och väljer rätt läge automatiskt – se `Diktatorn-rekommendation.txt` i programmappen. |
 | **Mikrofon** | Välj vilken mikrofon dikteringen lyssnar på. Välj ditt headset, inte t.ex. webbkameran. |
 | **Modell** | Snabbhet vs noggrannhet (se punkt 5). |
@@ -179,6 +220,10 @@ samma meny.
 |---------|----------|
 | **Håll Ctrl+Shift** | Diktera (push-to-talk) |
 | **Ctrl+Shift+D** | Diktera (på/av) |
+| **Ctrl+Shift+N** | Journalanteckning (på/av) |
 | **Ctrl+Shift+M** | Starta/stoppa mötesinspelning |
+
+Om ett kortkommando redan används av ett annat program varnar Diktatorn med en ballong vid start –
+då fungerar just den tangenten inte, och du får stänga det andra programmet eller använda tray-menyn.
 
 Lycka till – nu styr du med rösten. 🫡

@@ -42,6 +42,7 @@ Source: "Generate-Icon.ps1";    DestDir: "{app}"; Flags: ignoreversion
 Source: "Diktatorn.ico";        DestDir: "{app}"; Flags: ignoreversion
 Source: "Install-Diktatorn.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";            DestDir: "{app}"; Flags: ignoreversion
+Source: "exempel-saljsamtal.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "Anvandarmanual.md";    DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE";              DestDir: "{app}"; Flags: ignoreversion
 
