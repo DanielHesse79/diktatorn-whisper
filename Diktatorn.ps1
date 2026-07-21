@@ -60,6 +60,7 @@ $coachDefaults = @{
     openrouter = @{ url = 'https://openrouter.ai/api/v1/chat/completions';   model = 'openrouter/auto' }
 }
 $meetModeCfg  = Join-Path $root 'diktatorn-meetmode.txt'    # 'live' | 'deferred' (transcribe after the meeting; kind to weak GPUs)
+$meetLangCfg  = Join-Path $root 'diktatorn-meetlang.txt'    # 'sv' | 'en' | 'auto' (auto mis-detects Swedish as English)
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
 $crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
@@ -553,6 +554,33 @@ function Set-MeetMode([string]$m) {
     foreach ($it in $script:meetModeMenuItems) { $it.Checked = ($it.Tag -eq $m) }
 }
 
+# --- Meeting language ---
+# Meeting chunks used to be sent with an empty language for per-chunk auto-detect.
+# That silently TRANSLATED Swedish meetings into English: Whisper detects the
+# language per 30 s chunk, guesses English on quiet or ambiguous audio, and then
+# renders Swedish speech as English prose. Four consecutive real meetings came
+# out fully in English before this was spotted (verified: the same clip reports
+# language='English' with no language field, 'Swedish' when 'sv' is sent).
+# Default to Swedish; auto stays available but is labelled as unreliable.
+function Resolve-MeetLang {
+    if (Test-Path $meetLangCfg) {
+        $l = (Get-Content $meetLangCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($l -in @('sv', 'en', 'auto')) { return $l }
+    }
+    return 'sv'
+}
+$script:meetLang = Resolve-MeetLang
+function Set-MeetLang([string]$l) {
+    $script:meetLang = $l
+    try { [System.IO.File]::WriteAllText($meetLangCfg, $l) } catch {}
+    foreach ($it in $script:meetLangMenuItems) { $it.Checked = ($it.Tag -eq $l) }
+    if ($l -eq 'auto') {
+        $tray.ShowBalloonTip(7000, 'Diktatorn', 'Auto kan feltolka svenska som engelska och da oversatts motet. Valj Svenska om motet ar pa svenska.', 'Warning')
+    }
+}
+# The value actually handed to the backends: '' means auto-detect.
+function Get-MeetLangCode { if ($script:meetLang -eq 'auto') { return '' } else { return $script:meetLang } }
+
 # --- Tray ---
 function New-DotIcon([System.Drawing.Color]$c) {
     $bmp = New-Object System.Drawing.Bitmap 16,16
@@ -694,6 +722,21 @@ foreach ($m in @(
     $script:meetModeMenuItems += $item
 }
 [void]$menu.Items.Add($miMode)
+$miMeetLang = New-Object System.Windows.Forms.ToolStripMenuItem 'Motessprak'
+$script:meetLangMenuItems = @()
+foreach ($l in @(
+    @{t='sv';   l='Svenska'},
+    @{t='en';   l='Engelska'},
+    @{t='auto'; l='Auto (kan oversatta till engelska)'}
+)) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $l.l
+    $item.Tag = $l.t
+    $item.Checked = ($l.t -eq $script:meetLang)
+    $item.add_Click({ Set-MeetLang ([string]$this.Tag) })
+    [void]$miMeetLang.DropDownItems.Add($item)
+    $script:meetLangMenuItems += $item
+}
+[void]$menu.Items.Add($miMeetLang)
 $miKey = $menu.Items.Add('Ange Groq API-nyckel...')
 $miKey.add_Click({
     Add-Type -AssemblyName Microsoft.VisualBasic
@@ -1114,12 +1157,13 @@ function Get-ChunkText([string]$wav) {
     [AudioPrep]::Clean($wav, $clean)                                                    # throws -> caller preserves audio
     if (-not (Test-Path $clean) -or ((Get-Item $clean).Length -lt 16000)) { return $null }   # <0.5 s voiced = silence
     $secs = Get-WavSeconds $clean
+    $lang = Get-MeetLangCode   # '' only when the user explicitly picked Auto
     if ($script:backend -eq 'groq') {
         $key = Get-GroqKey
         if (-not $key) { throw 'Ingen Groq-nyckel' }
-        $text = ([Cloud]::Transcribe($key, $clean, $groqModel, '')).Trim()   # '' = auto-detect sv/en
+        $text = ([Cloud]::Transcribe($key, $clean, $groqModel, $lang)).Trim()
     } else {
-        $seg = Get-Transcript $clean ''
+        $seg = Get-Transcript $clean $lang
         $text = ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
     }
     if (-not $text -or $text -match '^[\s\.\-\!\?]*$') { return $null }
@@ -1131,12 +1175,14 @@ function Get-ChunkText([string]$wav) {
 # The result is ONLY used for counting; the visible transcript stays clean.
 function Get-VerbatimText([string]$cleanWav) {
     try {
+        $lang = Get-MeetLangCode   # same language as the visible transcript
         if ($script:backend -eq 'groq') {
             $key = Get-GroqKey
             if (-not $key) { return $null }
-            return ([Cloud]::TranscribeWithPrompt($key, $cleanWav, $groqModel, '', $verbatimPrompt)).Trim()
+            return ([Cloud]::TranscribeWithPrompt($key, $cleanWav, $groqModel, $lang, $verbatimPrompt)).Trim()
         }
-        $seg = Transcribe-File -model $script:model -path $cleanWav -prompt $verbatimPrompt
+        $seg = if ($lang) { Transcribe-File -model $script:model -path $cleanWav -language $lang -prompt $verbatimPrompt }
+               else { Transcribe-File -model $script:model -path $cleanWav -prompt $verbatimPrompt }
         return ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim())
     } catch { Write-Log "verbatim: $($_.Exception.Message)"; return $null }
 }

@@ -64,6 +64,18 @@ Exempel på resultat:
 Talfördelning: Du 12,4 min (38%)  |  Övriga 20,1 min (62%)
 ```
 
+### Ställ in mötesspråket
+
+Tray-menyn → **Mötesspråk**: **Svenska** (standard), **Engelska** eller **Auto**.
+
+> **Viktigt:** lämna inte detta på *Auto* för svenska möten. Whisper gissar språk för varje
+> 30-sekundersblock, och gissar den fel skriver den ut svenskt tal *som om* det vore engelska –
+> resultatet blir ett helt översatt möte. Det ser inte ut som ett fel, det ser ut som en
+> transkription på fel språk, vilket är lätt att missa tills man läser texten.
+
+Håller ni mötet på engelska: välj **Engelska**. Byter ni språk mitt i mötet blir det block på
+fel språk oavsett inställning – välj då det språk som dominerar.
+
 > 💡 Med **headset** blir uppdelningen Du/Övriga ren. Kör du mötet på **högtalare** hör din mikrofon
 > även de andra, så deras ord kan dyka upp under "Du".
 
@@ -170,6 +182,7 @@ försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råka
 | **Öppna dagens journal** | Öppnar dagens journalfil (se punkt 3b). |
 | **Sälj-script** | Öppnar en checklista som guidar dig genom ett förberett säljsamtal (se punkt 3c). |
 | **Mötestranskribering** | **Live** (texten växer under mötet) eller **Efter mötet** (spelar bara in under mötet och transkriberar allt när du trycker stopp – skonsamt för klenare datorer; krokodilvarningen fungerar ändå). Installationen mäter din dators hastighet och väljer rätt läge automatiskt – se `Diktatorn-rekommendation.txt` i programmappen. |
+| **Mötesspråk** | **Svenska** (standard), **Engelska** eller **Auto**. Ställ in vilket språk mötet hålls på – se varningen nedan. |
 | **Mikrofon** | Välj vilken mikrofon dikteringen lyssnar på. Välj ditt headset, inte t.ex. webbkameran. |
 | **Modell** | Snabbhet vs noggrannhet (se punkt 5). |
 | **Grafikkort** | Visas bara om datorn har flera. Lokal transkribering körs på valt kort – välj alltid det **dedikerade** (t.ex. NVIDIA GeForce), aldrig det integrerade. Skillnaden är dramatisk: på en testmaskin gav det integrerade kortet 0,3x realtid och det dedikerade 10,9x – 34 gånger snabbare. Diktatorn väljer dedikerat kort automatiskt, men här kan du styra om. |

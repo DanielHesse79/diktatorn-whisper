@@ -17,6 +17,10 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 - **Dictation → typed at the cursor**, in any app:
   - **Hold `Ctrl+Shift`** (push-to-talk): speak, release, text is typed.
   - **`Ctrl+Shift+D`** (toggle): press to start, press again to stop.
+- **Meeting language** (tray): **Swedish** (default), **English**, or **Auto**. Auto is available but
+  discouraged — Whisper detects language per 30 s chunk, and a wrong guess renders Swedish speech as
+  English prose, i.e. it silently *translates* the meeting. That shipped as the default at one point and
+  turned four consecutive real Swedish meetings into English before anyone noticed.
 - **Meeting transcription** (`Ctrl+Shift+M`): records **system audio** (remote participants, WASAPI
   loopback) and **your mic** as separate streams, transcribed **continuously during the meeting** in 30 s
   chunks with **speaker labels** (`Du:` = you, `Övriga:` = the others — the label is simply which stream
