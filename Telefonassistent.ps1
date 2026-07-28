@@ -1,18 +1,26 @@
-# --- Telefonassistent: AI som pratar i telefonsamtal via Telefonlank ---
+# --- Telefonassistent: AI som pratar i dina samtal ---
+#
+# Fungerar med VILKEN samtalsapp som helst - Telefonlank, WhatsApp, Teams, Zoom,
+# Discord. Bryggan ser inte vilket program som ringer; den fangar det datorn
+# spelar upp och talar in i en virtuell kabel.
 #
 # Ljudvagen (verifierad 2026-07-23):
 #
-#   Motparten -> Telefonlank -> hogtalarna -> WASAPI-loopback -> hit
-#   harifran  -> WasapiOut   -> CABLE Input -> CABLE Output -> Telefonlanks mik -> motparten
+#   Motparten -> samtalsappen -> hogtalarna -> WASAPI-loopback -> hit
+#   harifran  -> WasapiOut    -> CABLE Input -> CABLE Output -> appens mik -> motparten
 #
-# Telefonlank exponerar aldrig samtalet som en ljudenhet, darfor loopback pa
-# hogtalarna. Och det finns ingen vag att mata Telefonlanks mikrofon utan en
-# virtuell kabel, darfor VB-CABLE. Bada ar nodvandiga, ingen av dem valbar.
+# Loopback behovs for att samtalsappar sallan exponerar samtalet som en
+# ljudenhet (Telefonlank gor det aldrig). Kabeln behovs for att inget API kan
+# mata en annan apps mikrofoningang. Bada ar nodvandiga, ingen av dem valbar.
 #
-# KRAV i Windows ljudinstallningar:
-#   Utdata standard              = dina hogtalare (dar Telefonlank spelar samtalet)
-#   Indata standard OCH kommunikation = CABLE Output
-# Starta om Telefonlank efter andring - den valjer mikrofon vid start.
+# UTGANG: alltid CABLE Input.
+# INGANG till samtalsappen: CABLE Output - men VAR den stalls in skiljer sig:
+#   WhatsApp / Teams / Zoom / Discord - i appens egna ljudinstallningar.
+#     Basta valet: systemets standardmikrofon kan forbli din riktiga.
+#   Telefonlank - har inget eget val, tar systemets standardmikrofon.
+#     Da maste bade standard- OCH kommunikationsrollen sattas till CABLE Output,
+#     vilket tystar dig i alla andra program sa lange det galler.
+#     Starta om Telefonlank efter andring - den valjer mikrofon vid start.
 #
 # Hjarnan ar Telefonsvararen-serverns /api/tur (persona, gpt-audio, fyllnadsljud,
 # sammanfattning). Den har filen ar bara oron och rosten.

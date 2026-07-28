@@ -138,16 +138,40 @@ answers out loud, in Swedish, roughly a second after they stop talking.
    stops it automatically. **No API key lives in this repo.**
 3. **Phone Link**, paired and able to place calls.
 
-### Windows audio settings (this is the fiddly part)
+### Works with any calling app
+
+The bridge never sees which program is calling — it captures what the machine plays and speaks into a
+cable. **Phone Link, WhatsApp, Teams, Zoom and Discord all work.** What differs is only *where* you point
+that app's microphone at `CABLE Output`:
+
+| App | Where the mic is chosen | Affects other programs? |
+|---|---|---|
+| **WhatsApp** | Settings → Voice and video → Microphone | No |
+| **Teams / Zoom / Discord** | their own audio settings | No |
+| **Phone Link** | no setting of its own — takes the system default | **Yes**, see below |
+
+Prefer an app with its own picker: the system default microphone can stay your real one, and nothing else
+on the machine is disturbed.
+
+### Windows audio settings
+
+Output must always be **your speakers** — that's where the call is played, and that stream is what the
+assistant listens to.
+
+Input depends on the app. If it has its own picker, leave the system default alone and select
+`CABLE Output` inside the app. Done.
+
+**Only for Phone Link**, which has no picker:
 
 | Setting | Value |
 |---|---|
-| Output, default | your speakers — where Phone Link plays the call |
 | Input, default **and** communications | `CABLE Output` |
 
-Both input roles must point at the cable. Phone Link reads the *plain* default, not the communications
-one, and will otherwise put your room microphone into the call. The communications role is set in
+Both roles must point at the cable — Phone Link reads the *plain* default, not the communications one,
+and will otherwise put your room microphone into the call. The communications role is set in
 `mmsys.cpl`; the plain one in Settings → System → Sound.
+
+The cost is that you go silent in every other program while this is set, since they use the same default.
 
 **Restart Phone Link after changing defaults** — it picks its microphone at startup and otherwise keeps
 using the old one.

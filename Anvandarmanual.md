@@ -280,18 +280,43 @@ Tillägget är valfritt. Saknas något av nedanstående visas det helt enkelt in
    Diktatorn startar och stoppar den automatiskt. **API-nyckeln bor där, aldrig i Diktatorn.**
 3. **Telefonlänk**, ihopparad med telefonen.
 
+### Fungerar med vilken samtalsapp som helst
+
+Assistenten ser inte vilket program som ringer. Den fångar det datorn spelar upp och talar in i kabeln –
+så **Telefonlänk, WhatsApp, Teams, Zoom och Discord fungerar lika bra**.
+
+Det enda som skiljer är *var* du pekar appens mikrofon till `CABLE Output`:
+
+| App | Var mikrofonen väljs | Påverkar andra program? |
+|---|---|---|
+| **WhatsApp** | Inställningar → Röst och video → Mikrofon | Nej |
+| **Teams / Zoom / Discord** | appens egna ljudinställningar | Nej |
+| **Telefonlänk** | har inget eget val – tar systemets standard | **Ja**, se nedan |
+
+**Appar med eget mikrofonval är att föredra.** Då kan systemets standardmikrofon förbli din riktiga, och
+allt annat på datorn fungerar som vanligt.
+
 ### Ljudinställningar i Windows
 
-Det här är den kluriga biten, och det är värt att göra rätt från början:
+Utdata ska alltid vara **dina högtalare** – det är där samtalet spelas upp, och det är den strömmen
+assistenten lyssnar på.
+
+Indata beror på appen. Har den eget mikrofonval: låt systemets standard vara din riktiga mikrofon och
+välj `CABLE Output` inne i appen. Klart.
+
+**Bara för Telefonlänk**, som saknar eget val:
 
 | Inställning | Värde |
 |---|---|
-| Utdata, standard | dina högtalare – dit Telefonlänk spelar samtalet |
 | Indata, standard **och** kommunikation | `CABLE Output` |
 
-**Båda** indata-rollerna måste peka på kabeln. Telefonlänk hämtar den vanliga standarden, inte
-kommunikationsrollen, och tar annars din rumsmikrofon – då hör motparten ditt rum i stället för AI:n.
-Kommunikationsrollen sätts i `mmsys.cpl`, den vanliga under Inställningar → System → Ljud.
+Båda rollerna måste peka på kabeln – Telefonlänk hämtar den vanliga standarden, inte
+kommunikationsrollen, och tar annars din rumsmikrofon. Kommunikationsrollen sätts i `mmsys.cpl`, den
+vanliga under Inställningar → System → Ljud.
+
+Priset är att du blir tyst i alla andra program så länge det gäller, eftersom de också använder
+standardmikrofonen. Vill du ringa i WhatsApp under tiden får du välja din riktiga mikrofon inne i
+WhatsApp.
 
 **Starta om Telefonlänk efter varje ändring.** Den väljer mikrofon när den startar och sitter annars kvar
 på den gamla.
