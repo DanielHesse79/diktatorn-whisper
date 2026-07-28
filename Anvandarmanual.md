@@ -188,6 +188,11 @@ försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råka
 | **Grafikkort** | Visas bara om datorn har flera. Lokal transkribering körs på valt kort – välj alltid det **dedikerade** (t.ex. NVIDIA GeForce), aldrig det integrerade. Skillnaden är dramatisk: på en testmaskin gav det integrerade kortet 0,3x realtid och det dedikerade 10,9x – 34 gånger snabbare. Diktatorn väljer dedikerat kort automatiskt, men här kan du styra om. |
 | **Transkribering** | Växla mellan **Lokal** (din dator, privat) och **Groq moln** (snabbt, se punkt 6). |
 | **Ange Groq API-nyckel** | Klistra in din gratis molnnyckel (se punkt 6). |
+| **Starta telefonassistent** | AI som pratar i dina telefonsamtal (se punkt 9). Visas bara om tillägget är installerat. |
+| **Testa kabeln** | Spelar en ton in i samtalet. Hör motparten den fungerar ljudvägen ut. |
+| **Telefonassistent: utgång** | Ska vara `CABLE Input`. Väljer du högtalarna talar AI:n till rummet i stället för in i samtalet. |
+| **Telefonassistent: roll** | **Svarare** besvarar inkommande samtal, **Uppringare** ringer ut åt dig. |
+| **Telefonassistent: serverkatalog** | Behövs bara om Telefonsvararen ligger på en ovanlig plats. |
 | **Avsluta** | Stänger Diktatorn. |
 
 Alla val sparas och gäller även nästa gång du startar.
@@ -257,5 +262,61 @@ samma meny.
 
 Om ett kortkommando redan används av ett annat program varnar Diktatorn med en ballong vid start –
 då fungerar just den tangenten inte, och du får stänga det andra programmet eller använda tray-menyn.
+
+---
+
+## 9. Telefonassistent – AI som pratar i dina samtal
+
+En AI som hör motparten och svarar högt i telefonsamtalet, ungefär en sekund efter att hen slutat prata.
+Den kan besvara samtal när du inte hinner, eller ringa upp någon åt dig.
+
+Tillägget är valfritt. Saknas något av nedanstående visas det helt enkelt inte i menyn.
+
+### Det här behövs
+
+1. **[VB-CABLE](https://vb-audio.com/Cable/)** – gratisversionen räcker. Det finns inget annat sätt att
+   få in ljud i Telefonlänks mikrofon; något API för det existerar inte.
+2. **Telefonsvararen** – den separata servern som håller personligheten och sköter tal-till-tal.
+   Diktatorn startar och stoppar den automatiskt. **API-nyckeln bor där, aldrig i Diktatorn.**
+3. **Telefonlänk**, ihopparad med telefonen.
+
+### Ljudinställningar i Windows
+
+Det här är den kluriga biten, och det är värt att göra rätt från början:
+
+| Inställning | Värde |
+|---|---|
+| Utdata, standard | dina högtalare – dit Telefonlänk spelar samtalet |
+| Indata, standard **och** kommunikation | `CABLE Output` |
+
+**Båda** indata-rollerna måste peka på kabeln. Telefonlänk hämtar den vanliga standarden, inte
+kommunikationsrollen, och tar annars din rumsmikrofon – då hör motparten ditt rum i stället för AI:n.
+Kommunikationsrollen sätts i `mmsys.cpl`, den vanliga under Inställningar → System → Ljud.
+
+**Starta om Telefonlänk efter varje ändring.** Den väljer mikrofon när den startar och sitter annars kvar
+på den gamla.
+
+Kryssa **inte** i "Lyssna på den här enheten" på `CABLE Output`. Då hamnar AI:ns röst i högtalarna,
+loopbacken fångar upp den, och den börjar svara på sig själv.
+
+### Så använder du den
+
+1. Högerklicka ikonen → **Telefonassistent: utgång** → välj `CABLE Input`
+2. Välj **roll**: *Svarare* om den ska besvara samtal, *Uppringare* om den ska ringa ut
+3. Ring, och tryck **Starta telefonassistent**
+
+Testa alltid **Testa kabeln** först i ett nytt samtal – tonen visar direkt om ljudvägen ut fungerar,
+utan att blanda in AI:n. Hör motparten pipen är resten bara att köra.
+
+När du stoppar assistenten hämtas en sammanfattning av samtalet och visas som en ballong.
+
+### Om det inte fungerar
+
+| Symtom | Orsak |
+|---|---|
+| Motparten hör ditt rum | Telefonlänk tog rumsmikrofonen. Sätt `CABLE Output` som **båda** standardrollerna och starta om Telefonlänk. |
+| Du hör AI:n i högtalarna | Utgången står på högtalarna. Byt till `CABLE Input`. |
+| AI:n svarar på sig själv | "Lyssna på den här enheten" är ikryssad på `CABLE Output`. Kryssa ur. |
+| Ingenting händer alls | Servern startade inte. Kontrollera att Node är installerat och att serverkatalogen pekar rätt. |
 
 Lycka till – nu styr du med rösten. 🫡

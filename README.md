@@ -45,6 +45,12 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   one-line brief ("first call with an IT manager at a mid-size manufacturer, selling automated reporting")
   and **improve** an existing one on request. Uses the same pluggable engine as the coach, so picking
   Ollama keeps your deal descriptions on the machine. Scripts stay plain `.md` files — editable anywhere.
+- **Phone assistant** (optional): an AI that **talks in your phone calls** — answers when you can't, or
+  calls someone on your behalf. Hears the other party via **WASAPI loopback** (what Phone Link plays to
+  your speakers) and speaks into the call through a **virtual audio cable** that Phone Link reads as its
+  microphone. Requires [VB-CABLE](https://vb-audio.com/Cable/) and the companion
+  [Telefonsvararen](https://github.com/DanielHesse79) server, which holds the persona and does the
+  speech-to-speech. See [Phone assistant](#phone-assistant-optional) below.
 - **Local or cloud** transcription, switchable in the tray:
   - **Local** — runs on your GPU via Const-me Whisper. Private, offline.
   - **Groq cloud** — `whisper-large-v3-turbo`, sub-second and great multilingual quality. Ideal for
@@ -118,10 +124,68 @@ Tray icon colours: 🟢 ready · 🔴 recording (dictation) · 🔵 recording (m
 The key is stored locally in `diktatorn-groq.txt` (git-ignored) or read from `$env:GROQ_API_KEY`.
 Meetings can be sensitive — keep the **Local** backend for private calls.
 
+## Phone assistant (optional)
+
+An AI that speaks in your actual phone calls, over **Windows Phone Link**. It hears the other party and
+answers out loud, in Swedish, roughly a second after they stop talking.
+
+### What you need
+
+1. **[VB-CABLE](https://vb-audio.com/Cable/)** — the free single cable is enough. It is the *only* way to
+   feed audio into Phone Link's microphone; no API exists for that.
+2. **[Telefonsvararen](https://github.com/DanielHesse79)** — the companion server that holds the persona
+   and does the speech-to-speech (Node 20+, an OpenRouter key in its own `.env`). Diktatorn starts and
+   stops it automatically. **No API key lives in this repo.**
+3. **Phone Link**, paired and able to place calls.
+
+### Windows audio settings (this is the fiddly part)
+
+| Setting | Value |
+|---|---|
+| Output, default | your speakers — where Phone Link plays the call |
+| Input, default **and** communications | `CABLE Output` |
+
+Both input roles must point at the cable. Phone Link reads the *plain* default, not the communications
+one, and will otherwise put your room microphone into the call. The communications role is set in
+`mmsys.cpl`; the plain one in Settings → System → Sound.
+
+**Restart Phone Link after changing defaults** — it picks its microphone at startup and otherwise keeps
+using the old one.
+
+Do **not** tick "Listen to this device" on `CABLE Output`: the AI's voice would land in your speakers,
+the loopback would capture it, and it would start answering itself.
+
+### Using it
+
+Tray → **Starta telefonassistent**. Then:
+
+- **Testa kabeln (ton till motparten)** — plays a tone into the call. If the other party hears it, the
+  whole outbound path works. Proves the plumbing without spending an AI turn.
+- **Telefonassistent: utgang** — must be `CABLE Input`. Picking speakers means the AI talks to your room
+  instead of into the call; the app warns you.
+- **Telefonassistent: roll** — *Svarare* answers incoming calls (greets first), *Uppringare* calls out
+  (waits for the other party, then introduces itself as an AI on your behalf).
+- **Telefonassistent: serverkatalog...** — only needed if Telefonsvararen isn't beside this folder.
+
+Stopping the assistant fetches a summary of the call and shows it as a balloon.
+
+### Why loopback and a cable, and not something cleaner
+
+Phone Link never exposes call audio as an audio device. Windows lists the paired phone's
+`Hands-Free HF Audio` endpoints as `ACTIVE` in the registry and `OK` in `Get-PnpDevice`, but no
+application can open them — verified with `ffmpeg -list_devices true -f dshow -i dummy`, which sees only
+the real microphones **even during an active call with Phone Link connected**. Those registry values are
+persisted state, not live availability. The audio is real and audible in the speakers, so the only way in
+is to capture what is played; the only way back out is a virtual device Phone Link mistakes for a
+microphone. Hence loopback plus VB-CABLE.
+
 ## How it works
 
 - A message-only window registers the global hotkeys (`RegisterHotKey`); push-to-talk is detected by
   polling `GetAsyncKeyState` in a WinForms timer.
+- The phone assistant (`Telefonassistent.ps1`) runs its own C# `PhoneBridge`: `WasapiLoopbackCapture` in,
+  RMS voice-activity detection with a measured noise floor, `WasapiOut` to a chosen device out. The whole
+  turn loop lives on background threads, so the tray never freezes mid-call.
 - Mic capture uses NAudio `WaveInEvent` at **16 kHz/16-bit/mono** (exactly what Whisper expects);
   meeting audio uses `WasapiLoopbackCapture`.
 - Transcription goes to the local Const-me model (`WhisperPS`) or to Groq's OpenAI-compatible

@@ -4,7 +4,7 @@
 ; Compile:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" Diktatorn.iss
 
 #define MyAppName "Diktatorn"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "Daniel Hesse"
 #define MyAppURL "https://github.com/DanielHesse79/diktatorn-whisper"
 
@@ -37,6 +37,7 @@ Name: "autostart"; Description: "Starta Diktatorn automatiskt vid inloggning"; G
 
 [Files]
 Source: "Diktatorn.ps1";        DestDir: "{app}"; Flags: ignoreversion
+Source: "Telefonassistent.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "Diktatorn.vbs";        DestDir: "{app}"; Flags: ignoreversion
 Source: "Generate-Icon.ps1";    DestDir: "{app}"; Flags: ignoreversion
 Source: "Diktatorn.ico";        DestDir: "{app}"; Flags: ignoreversion
@@ -72,3 +73,6 @@ Type: files; Name: "{app}\diktatorn-mic.txt"
 Type: files; Name: "{app}\diktatorn-model.txt"
 Type: files; Name: "{app}\diktatorn-backend.txt"
 Type: files; Name: "{app}\diktatorn-groq.txt"
+Type: files; Name: "{app}\diktatorn-openrouter.txt"
+Type: files; Name: "{app}\diktatorn-telefon-utgang.txt"
+Type: files; Name: "{app}\diktatorn-telefon-server.txt"

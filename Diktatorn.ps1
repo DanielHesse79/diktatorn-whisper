@@ -581,6 +581,17 @@ function Set-MeetLang([string]$l) {
 # The value actually handed to the backends: '' means auto-detect.
 function Get-MeetLangCode { if ($script:meetLang -eq 'auto') { return '' } else { return $script:meetLang } }
 
+# --- Telefonassistent (AI som pratar i telefonsamtal; egen fil) ---
+# Laddas efter NAudio men fore tray-menyn - funktionerna anvander $tray forst
+# nar de anropas, sa ordningen har racker.
+$script:taTillganglig = $false
+try {
+    . (Join-Path $PSScriptRoot 'Telefonassistent.ps1')
+    $script:taTillganglig = $true
+} catch {
+    # Saknas filen eller VB-CABLE gar resten av Diktatorn igang anda.
+}
+
 # --- Tray ---
 function New-DotIcon([System.Drawing.Color]$c) {
     $bmp = New-Object System.Drawing.Bitmap 16,16
@@ -612,6 +623,68 @@ $miJournal.add_Click({
 })
 $miScript = $menu.Items.Add('Salj-script...')
 $miScript.add_Click({ Open-ScriptPicker })
+
+# --- Telefonassistent i menyn ---
+if ($script:taTillganglig) {
+    [void]$menu.Items.Add('-')
+    $miPhone = $menu.Items.Add('Starta telefonassistent')
+    $miPhoneTon = $menu.Items.Add('Testa kabeln (ton till motparten)')
+    $miPhoneTon.Enabled = $false
+
+    # Utgang: dit AI:ns rost gar. Ska vara CABLE Input, annars hors den bara i
+    # rummet i stallet for i samtalet.
+    $miPhoneUt = New-Object System.Windows.Forms.ToolStripMenuItem 'Telefonassistent: utgang'
+    $script:taUtMenuItems = @()
+    $script:taValdUt = (Get-TaValdUtgang).Namn
+    foreach ($e in Get-TaUtenheter) {
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem $e.Namn
+        $item.Tag = $e.Namn
+        $item.Checked = ($e.Namn -eq $script:taValdUt)
+        $item.add_Click({
+            Set-TaUtgang ([string]$this.Tag)
+            $script:taValdUt = [string]$this.Tag
+            foreach ($it in $script:taUtMenuItems) { $it.Checked = ($it.Tag -eq $script:taValdUt) }
+        })
+        [void]$miPhoneUt.DropDownItems.Add($item)
+        $script:taUtMenuItems += $item
+    }
+    [void]$menu.Items.Add($miPhoneUt)
+
+    # Roll: svarare vantar in den som ringer, uppringare presenterar sig sjalv.
+    $miPhoneRoll = New-Object System.Windows.Forms.ToolStripMenuItem 'Telefonassistent: roll'
+    $script:taRollMenuItems = @()
+    foreach ($r in @(@{ t = 'svarare'; l = 'Svarare (besvarar samtal)' }, @{ t = 'uppringare'; l = 'Uppringare (ringer ut)' })) {
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem $r.l
+        $item.Tag = $r.t
+        $item.Checked = ($r.t -eq $script:taRoll)
+        $item.add_Click({
+            $script:taRoll = [string]$this.Tag
+            foreach ($it in $script:taRollMenuItems) { $it.Checked = ($it.Tag -eq $script:taRoll) }
+        })
+        [void]$miPhoneRoll.DropDownItems.Add($item)
+        $script:taRollMenuItems += $item
+    }
+    [void]$menu.Items.Add($miPhoneRoll)
+
+    # Hjarnan (Telefonsvararen-servern) hittas normalt automatiskt. Ligger den
+    # nagon annanstans pekas den ut har i stallet for att redigera kod.
+    $miPhoneRot = $menu.Items.Add('Telefonassistent: serverkatalog...')
+    $miPhoneRot.add_Click({
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Valj mappen dar Telefonsvararens server.js ligger'
+        $nu = Get-TaRoot
+        if ($nu) { $dlg.SelectedPath = $nu }
+        if ($dlg.ShowDialog() -eq 'OK') {
+            if (Test-Path (Join-Path $dlg.SelectedPath 'server.js')) {
+                Set-TaRoot $dlg.SelectedPath
+                $tray.ShowBalloonTip(3000, 'Telefonassistent', 'Serverkatalog sparad.', 'Info')
+            } else {
+                $tray.ShowBalloonTip(4000, 'Telefonassistent', 'Ingen server.js i den mappen.', 'Warning')
+            }
+        }
+    })
+}
+
 [void]$menu.Items.Add('-')
 $miMic = New-Object System.Windows.Forms.ToolStripMenuItem 'Mikrofon (diktering)'
 $script:micMenuItems = @()
@@ -1633,8 +1706,27 @@ $timer.Start()
 # --- Lifecycle ---
 $appContext = New-Object System.Windows.Forms.ApplicationContext
 $miMeeting.add_Click({ if ($script:meeting) { Stop-Meeting } else { Start-Meeting } })
+
+if ($script:taTillganglig) {
+    $miPhone.add_Click({
+        if ($script:taBridge) {
+            Stop-Telefonassistent
+            $miPhone.Text = 'Starta telefonassistent'
+            $miPhoneTon.Enabled = $false
+        } elseif (Start-Telefonassistent $script:taRoll 400) {
+            $miPhone.Text = 'Stoppa telefonassistent'
+            $miPhoneTon.Enabled = $true
+        }
+    })
+    # Tonen bevisar kabelvagen utan att blanda in AI:n - hor motparten den ar
+    # hela vagen ut klar.
+    $miPhoneTon.add_Click({ try { $script:taBridge.Testton() } catch {} })
+}
+
 $miQuit.add_Click({
     try { $timer.Stop() } catch {}
+    try { if ($script:taBridge) { Stop-Telefonassistent } } catch {}
+    try { Stop-TaServer } catch {}
     try { if ($script:meeting) { Stop-Meeting } } catch {}   # finish + save the transcript, don't lose it
     try { if ($script:dictating -or $script:journaling) { $script:micRec.Stop() } } catch {}
     try { if ($script:scriptForm -and -not $script:scriptForm.IsDisposed) { $script:scriptForm.Close() } } catch {}
