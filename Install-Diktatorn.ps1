@@ -138,5 +138,23 @@ if (-not $NoShortcuts) {
     }
 }
 
+# 7. VB-CABLE (bara for telefonassistenten - allt annat fungerar utan)
+$harKabel = $false
+try {
+    foreach ($k in Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render' -ErrorAction SilentlyContinue) {
+        $p = Get-ItemProperty "$($k.PSPath)\Properties" -ErrorAction SilentlyContinue
+        if ($p.'{a45c254e-df1c-4efd-8020-67d146a850e0},2' -match 'CABLE') { $harKabel = $true; break }
+    }
+} catch { }
+if ($harKabel) {
+    Step 'VB-CABLE hittad - telefonassistenten kan anvandas.'
+} else {
+    Write-Host ''
+    Write-Host 'Telefonassistenten (AI som pratar i dina telefonsamtal) kraver VB-CABLE.' -ForegroundColor Yellow
+    Write-Host 'Den ar gratis: https://vb-audio.com/Cable/  - installera och starta om datorn.' -ForegroundColor Yellow
+    Write-Host 'Allt annat i Diktatorn fungerar utan den. Se Anvandarmanual.md punkt 9.' -ForegroundColor Yellow
+    Write-Host ''
+}
+
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Step 'Klart! Starta Diktatorn fran skrivbordet eller Startmenyn.'
