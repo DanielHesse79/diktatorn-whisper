@@ -22,6 +22,12 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   wrong one **translates** rather than transcribes: Swedish speech comes out as fluent English, English
   as fluent Swedish. It looks like a working transcript in the wrong language, which is easy to miss.
   Empty-language auto-detect shipped once and turned four consecutive real Swedish meetings into English.
+- **Keep meeting audio** (tray, opt-in): normally the raw audio is deleted once a meeting is
+  transcribed. Turn this on and each meeting's audio is archived to `Documents\Transcriptions\Motesljud\`
+  for **7 days** (then auto-purged) — a safety net to re-transcribe if something went wrong (e.g. wrong
+  language). In live mode chunks are retained rather than deleted-on-transcribe so the archive is complete.
+- **Language prompt on start**: pressing `Ctrl+Shift+M` asks **Swedish or English** before recording, so
+  the per-meeting language is a deliberate choice (Enter accepts the last-used default).
 - **Meeting transcription** (`Ctrl+Shift+M`): records **system audio** (remote participants, WASAPI
   loopback) and **your mic** as separate streams, transcribed **continuously during the meeting** in 30 s
   chunks with **speaker labels** (`Du:` = you, `Övriga:` = the others — the label is simply which stream

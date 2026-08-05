@@ -50,7 +50,9 @@ Diktatorn spelar in **två spår samtidigt** under ett online-möte (Teams, Zoom
 Transkriberingen sker **löpande under mötet** i 30-sekundersblock med tidsstämplar.
 
 1. Starta mötet som vanligt.
-2. Tryck **Ctrl+Shift+M** (eller högerklicka ikonen → *Starta mötesinspelning*). Ikonen blir blå.
+2. Tryck **Ctrl+Shift+M** (eller högerklicka ikonen → *Starta mötesinspelning*). En liten ruta frågar
+   **Svenska eller Engelska** – välj det språk mötet hålls på (Enter väljer det du använde sist).
+   Ikonen blir blå.
 3. Vill du kika medan mötet pågår: högerklicka ikonen → **Visa transkript (live)** – filen växer i realtid.
 4. När mötet är klart: tryck **Ctrl+Shift+M** igen. Filen kompletteras med **talfördelning**
    (hur många minuter och procent du respektive de andra pratade) och öppnas automatiskt
@@ -78,6 +80,14 @@ innan du startar.
 
 Byter ni språk mitt i mötet blir det block på fel språk oavsett inställning – välj det språk som
 dominerar.
+
+### Spara mötesljudet (säkerhetskopia)
+
+Tray-menyn → **Spara mötesljud (7 dagar)**. Normalt raderas ljudet direkt efter transkribering.
+Slår du på det här sparas råljudet i `Dokument\Transcriptions\Motesljud\` i sju dagar (rensas sedan
+automatiskt). Då finns en väg tillbaka om något blir fel – till exempel om språket var felinställt –
+så att mötet kan transkriberas om. Kostar diskutrymme (ungefär 100–200 MB per timmes möte), så det är
+avstängt som standard.
 
 > 💡 Med **headset** blir uppdelningen Du/Övriga ren. Kör du mötet på **högtalare** hör din mikrofon
 > även de andra, så deras ord kan dyka upp under "Du".

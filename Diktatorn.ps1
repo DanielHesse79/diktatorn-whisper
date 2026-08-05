@@ -61,6 +61,9 @@ $coachDefaults = @{
 }
 $meetModeCfg  = Join-Path $root 'diktatorn-meetmode.txt'    # 'live' | 'deferred' (transcribe after the meeting; kind to weak GPUs)
 $meetLangCfg  = Join-Path $root 'diktatorn-meetlang.txt'    # 'sv' | 'en' (no auto: local engine can't detect, only mistranslate)
+$keepAudioCfg = Join-Path $root 'diktatorn-keepaudio.txt'   # 'on' | 'off' (keep meeting audio for re-transcription)
+$audioArchive = Join-Path $outDir 'Motesljud'              # kept meeting audio, purged after 7 days
+$keepAudioDays = 7
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
 $crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
@@ -584,6 +587,75 @@ function Set-MeetLang([string]$l) {
 # Concrete language handed to the backends - always 'sv' or 'en', never empty.
 function Get-ActiveMeetLang { return $script:meetLang }
 
+# --- Keep meeting audio (opt-in): a 7-day safety net so a mis-set language or a
+# botched transcription isn't unrecoverable. Audio is otherwise deleted on success. ---
+function Resolve-KeepAudio {
+    if (Test-Path $keepAudioCfg) { return ((Get-Content $keepAudioCfg -Raw -ErrorAction SilentlyContinue).Trim() -eq 'on') }
+    return $false
+}
+$script:keepAudio = Resolve-KeepAudio
+function Set-KeepAudio([bool]$on) {
+    $script:keepAudio = $on
+    try { [System.IO.File]::WriteAllText($keepAudioCfg, $(if ($on) { 'on' } else { 'off' })) } catch {}
+    if ($script:keepAudioMenuItem) { $script:keepAudioMenuItem.Checked = $on }
+    if ($on) { $tray.ShowBalloonTip(5000, 'Diktatorn', "Motesljud sparas nu i $keepAudioDays dagar i mappen Motesljud (Transcriptions).", 'Info') }
+}
+# Copy a meeting's chunk audio into the dated archive before the temp dir is cleaned.
+function Save-MeetingAudio {
+    if (-not $script:meetKeepAudio -or -not $script:meetDir -or -not (Test-Path $script:meetDir)) { return }
+    try {
+        New-Item -ItemType Directory -Force $audioArchive | Out-Null
+        $dest = Join-Path $audioArchive ([System.IO.Path]::GetFileNameWithoutExtension($script:meetOutFile))
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        Copy-Item (Join-Path $script:meetDir '*.wav') $dest -ErrorAction SilentlyContinue
+        Write-Log "Motesljud sparat: $dest"
+    } catch { Write-Log "Save-MeetingAudio: $($_.Exception.Message)" }
+}
+# Delete archived audio older than the retention window. Runs at startup and after each meeting.
+function Clear-OldMeetingAudio {
+    if (-not (Test-Path $audioArchive)) { return }
+    try {
+        $cutoff = (Get-Date).AddDays(-$keepAudioDays)
+        Get-ChildItem $audioArchive -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff } |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Write-Log "Gammalt motesljud rensat: $($_.Name)" }
+    } catch { Write-Log "Clear-OldMeetingAudio: $($_.Exception.Message)" }
+}
+
+# --- Language prompt shown on Ctrl+Shift+M so the choice is made per meeting. ---
+# Returns 'sv', 'en', or $null (cancelled). Pre-selects the current default.
+# Form + choice are $script:-scoped: the click handlers fire on the dialog's
+# nested message loop, and closures over function locals go null there.
+function Show-MeetLangPrompt {
+    $script:mlForm = New-Object System.Windows.Forms.Form
+    $script:mlForm.Text = 'Motessprak'
+    $script:mlForm.FormBorderStyle = 'FixedDialog'
+    $script:mlForm.StartPosition = 'CenterScreen'
+    $script:mlForm.MinimizeBox = $false; $script:mlForm.MaximizeBox = $false; $script:mlForm.TopMost = $true
+    $script:mlForm.ClientSize = New-Object System.Drawing.Size(320, 130)
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = 'Vilket sprak talas pa motet?'
+    $lbl.AutoSize = $true; $lbl.Location = New-Object System.Drawing.Point(16, 18)
+    $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $script:mlForm.Controls.Add($lbl)
+
+    $script:meetLangChoice = $null
+    $onClick = { $script:meetLangChoice = [string]$this.Tag; $script:mlForm.Close() }
+    $bSv = New-Object System.Windows.Forms.Button
+    $bSv.Text = 'Svenska'; $bSv.Tag = 'sv'; $bSv.Size = New-Object System.Drawing.Size(135, 40)
+    $bSv.Location = New-Object System.Drawing.Point(16, 60); $bSv.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $bSv.add_Click($onClick); $script:mlForm.Controls.Add($bSv)
+    $bEn = New-Object System.Windows.Forms.Button
+    $bEn.Text = 'Engelska'; $bEn.Tag = 'en'; $bEn.Size = New-Object System.Drawing.Size(135, 40)
+    $bEn.Location = New-Object System.Drawing.Point(169, 60); $bEn.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $bEn.add_Click($onClick); $script:mlForm.Controls.Add($bEn)
+    $script:mlForm.AcceptButton = $(if ($script:meetLang -eq 'en') { $bEn } else { $bSv })   # Enter = current default
+
+    [void]$script:mlForm.ShowDialog()
+    $script:mlForm.Dispose()
+    return $script:meetLangChoice
+}
+
 # --- Telefonassistent (AI som pratar i telefonsamtal; egen fil) ---
 # Laddas efter NAudio men fore tray-menyn - funktionerna anvander $tray forst
 # nar de anropas, sa ordningen har racker.
@@ -812,6 +884,11 @@ foreach ($l in @(
     $script:meetLangMenuItems += $item
 }
 [void]$menu.Items.Add($miMeetLang)
+$script:keepAudioMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem "Spara motesljud ($keepAudioDays dagar)"
+$script:keepAudioMenuItem.CheckOnClick = $true
+$script:keepAudioMenuItem.Checked = $script:keepAudio
+$script:keepAudioMenuItem.add_Click({ Set-KeepAudio $this.Checked })
+[void]$menu.Items.Add($script:keepAudioMenuItem)
 $miKey = $menu.Items.Add('Ange Groq API-nyckel...')
 $miKey.add_Click({
     Add-Type -AssemblyName Microsoft.VisualBasic
@@ -1400,7 +1477,10 @@ function Process-ReadyChunks([int]$upTo) {
                     else { $script:meetSecsOthers += $r.secs; $script:meetWordsOthers += ($r.text -split '\s+').Count; $chunkOthers = $r.secs }
                     $any = $true
                 }
-                Remove-Item $stream.wav -ErrorAction SilentlyContinue   # transcribed or silent -> safe to drop
+                # Transcribed or silent -> safe to drop. But when keep-audio is on, retain
+                # every chunk so the end-of-meeting archive is COMPLETE (live mode would
+                # otherwise delete chunks as they transcribe, leaving only the last one).
+                if (-not $script:meetKeepAudio) { Remove-Item $stream.wav -ErrorAction SilentlyContinue }
             } catch {
                 $script:meetFailed = $true
                 Write-Log "chunk ${i} ($($stream.label)): $($_.Exception.Message)"   # keep the audio (not deleted)
@@ -1471,6 +1551,11 @@ function Save-LiveTranscript([switch]$final) {
 function Start-Meeting {
     if ($script:meeting) { return }
     if ($script:dictating) { Cancel-Dictation }   # a slow Ctrl+Shift+M chord can arm PTT dictation; drop it
+    # Ask the meeting language up front — a wrong language silently mistranslates
+    # the whole meeting, so make it a deliberate per-meeting choice. Cancel = abort.
+    $choice = Show-MeetLangPrompt
+    if (-not $choice) { return }
+    if ($choice -ne $script:meetLang) { Set-MeetLang $choice }   # remember as the new default too
     try {
         $script:meetDir = Join-Path $env:TEMP ('diktatorn_meet_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
         New-Item -ItemType Directory -Force $script:meetDir | Out-Null
@@ -1480,6 +1565,7 @@ function Start-Meeting {
         $script:meetWordsYou = 0;  $script:meetWordsOthers = 0
         $script:meetAnalysis = $script:talanalys           # snapshot: mid-meeting toggles apply to the NEXT meeting
         $script:meetModeActive = $script:meetMode          # snapshot: live or deferred for THIS meeting
+        $script:meetKeepAudio = $script:keepAudio          # snapshot: a mid-meeting toggle mustn't half-retain
         $script:meetFinishing = $false
         $script:meetFillers = @{}; $script:meetQuestions = 0; $script:meetCoach = $null
         $script:chunkListYou = New-Object 'System.Collections.Generic.List[double]'
@@ -1526,6 +1612,7 @@ function Stop-Meeting {
             Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
             return
         }
+        Save-MeetingAudio   # opt-in 7-day archive, before the temp dir is cleaned below
         if (($script:meetAnalysis -eq 'coach') -and ($script:meetSecsYou -gt 5)) {
             Set-Status 'AI-coach analyserar...' $icoWork
             [System.Windows.Forms.Application]::DoEvents()
@@ -1565,7 +1652,10 @@ function Stop-Meeting {
         Write-Log "Stop-Meeting: $($_.Exception.Message)"
         # Do NOT delete $meetDir on error - the raw chunk audio is the only copy left.
         $tray.ShowBalloonTip(6000, 'Diktatorn', "Fel vid motesavslut. Ljud sparat i: $($script:meetDir)", 'Error')
-    } finally { $script:meetFinishing = $false; Set-Status 'redo' $icoIdle }
+    } finally {
+        Clear-OldMeetingAudio   # purge archives past the retention window
+        $script:meetFinishing = $false; Set-Status 'redo' $icoIdle
+    }
 }
 
 # Meeting timer: rotation happens inside the recorder, so this just transcribes finished
@@ -1734,5 +1824,6 @@ $miQuit.add_Click({
     $hk.Dispose(); $tray.Visible = $false; $appContext.ExitThread()
 })
 
+Clear-OldMeetingAudio   # purge any kept meeting audio past the retention window
 $tray.ShowBalloonTip(2500, 'Diktatorn', 'Redo. Hall Ctrl+Shift for att diktera, Ctrl+Shift+M for mote.', 'Info')
 [System.Windows.Forms.Application]::Run($appContext)
