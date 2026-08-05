@@ -60,7 +60,7 @@ $coachDefaults = @{
     openrouter = @{ url = 'https://openrouter.ai/api/v1/chat/completions';   model = 'openrouter/auto' }
 }
 $meetModeCfg  = Join-Path $root 'diktatorn-meetmode.txt'    # 'live' | 'deferred' (transcribe after the meeting; kind to weak GPUs)
-$meetLangCfg  = Join-Path $root 'diktatorn-meetlang.txt'    # 'sv' | 'en' | 'auto' (auto mis-detects Swedish as English)
+$meetLangCfg  = Join-Path $root 'diktatorn-meetlang.txt'    # 'sv' | 'en' (no auto: local engine can't detect, only mistranslate)
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
 $crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
@@ -555,31 +555,34 @@ function Set-MeetMode([string]$m) {
 }
 
 # --- Meeting language ---
-# Meeting chunks used to be sent with an empty language for per-chunk auto-detect.
-# That silently TRANSLATED Swedish meetings into English: Whisper detects the
-# language per 30 s chunk, guesses English on quiet or ambiguous audio, and then
-# renders Swedish speech as English prose. Four consecutive real meetings came
-# out fully in English before this was spotted (verified: the same clip reports
-# language='English' with no language field, 'Swedish' when 'sv' is sent).
-# Default to Swedish; auto stays available but is labelled as unreliable.
+# Explicit sv/en only. There is deliberately NO auto-detect: it isn't reliably
+# buildable on the local engine, and the failure mode is a silent mistranslation
+# that reads like a working transcript.
+#   * WhisperPS exposes no language-detection command - only a forced -language.
+#   * Forcing the wrong language TRANSLATES rather than reveals: -language en on
+#     Swedish audio -> English prose; -language sv on English audio -> Swedish
+#     prose. So the text content can never disclose the spoken language.
+#   * Omitting -language defaults to English (the original bug: real Swedish
+#     meetings came out fully in English).
+# Real language-ID lives only in the cloud (Groq), which would ship meeting audio
+# off-machine and defeat local mode. Meetings are single-language and the user
+# knows which before starting, so an explicit choice is the honest design.
 function Resolve-MeetLang {
     if (Test-Path $meetLangCfg) {
         $l = (Get-Content $meetLangCfg -Raw -ErrorAction SilentlyContinue).Trim()
-        if ($l -in @('sv', 'en', 'auto')) { return $l }
+        if ($l -in @('sv', 'en')) { return $l }
     }
     return 'sv'
 }
 $script:meetLang = Resolve-MeetLang
 function Set-MeetLang([string]$l) {
+    if ($l -notin @('sv', 'en')) { return }
     $script:meetLang = $l
     try { [System.IO.File]::WriteAllText($meetLangCfg, $l) } catch {}
     foreach ($it in $script:meetLangMenuItems) { $it.Checked = ($it.Tag -eq $l) }
-    if ($l -eq 'auto') {
-        $tray.ShowBalloonTip(7000, 'Diktatorn', 'Auto kan feltolka svenska som engelska och da oversatts motet. Valj Svenska om motet ar pa svenska.', 'Warning')
-    }
 }
-# The value actually handed to the backends: '' means auto-detect.
-function Get-MeetLangCode { if ($script:meetLang -eq 'auto') { return '' } else { return $script:meetLang } }
+# Concrete language handed to the backends - always 'sv' or 'en', never empty.
+function Get-ActiveMeetLang { return $script:meetLang }
 
 # --- Telefonassistent (AI som pratar i telefonsamtal; egen fil) ---
 # Laddas efter NAudio men fore tray-menyn - funktionerna anvander $tray forst
@@ -799,8 +802,7 @@ $miMeetLang = New-Object System.Windows.Forms.ToolStripMenuItem 'Motessprak'
 $script:meetLangMenuItems = @()
 foreach ($l in @(
     @{t='sv';   l='Svenska'},
-    @{t='en';   l='Engelska'},
-    @{t='auto'; l='Auto (kan oversatta till engelska)'}
+    @{t='en';   l='Engelska'}
 )) {
     $item = New-Object System.Windows.Forms.ToolStripMenuItem $l.l
     $item.Tag = $l.t
@@ -1230,7 +1232,7 @@ function Get-ChunkText([string]$wav) {
     [AudioPrep]::Clean($wav, $clean)                                                    # throws -> caller preserves audio
     if (-not (Test-Path $clean) -or ((Get-Item $clean).Length -lt 16000)) { return $null }   # <0.5 s voiced = silence
     $secs = Get-WavSeconds $clean
-    $lang = Get-MeetLangCode   # '' only when the user explicitly picked Auto
+    $lang = Get-ActiveMeetLang   # always 'sv' or 'en', never empty
     if ($script:backend -eq 'groq') {
         $key = Get-GroqKey
         if (-not $key) { throw 'Ingen Groq-nyckel' }
@@ -1248,14 +1250,13 @@ function Get-ChunkText([string]$wav) {
 # The result is ONLY used for counting; the visible transcript stays clean.
 function Get-VerbatimText([string]$cleanWav) {
     try {
-        $lang = Get-MeetLangCode   # same language as the visible transcript
+        $lang = Get-ActiveMeetLang   # same language as the visible transcript (never empty)
         if ($script:backend -eq 'groq') {
             $key = Get-GroqKey
             if (-not $key) { return $null }
             return ([Cloud]::TranscribeWithPrompt($key, $cleanWav, $groqModel, $lang, $verbatimPrompt)).Trim()
         }
-        $seg = if ($lang) { Transcribe-File -model $script:model -path $cleanWav -language $lang -prompt $verbatimPrompt }
-               else { Transcribe-File -model $script:model -path $cleanWav -prompt $verbatimPrompt }
+        $seg = Transcribe-File -model $script:model -path $cleanWav -language $lang -prompt $verbatimPrompt
         return ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim())
     } catch { Write-Log "verbatim: $($_.Exception.Message)"; return $null }
 }
