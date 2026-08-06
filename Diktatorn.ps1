@@ -64,6 +64,9 @@ $meetLangCfg  = Join-Path $root 'diktatorn-meetlang.txt'    # 'sv' | 'en' (no au
 $keepAudioCfg = Join-Path $root 'diktatorn-keepaudio.txt'   # 'on' | 'off' (keep meeting audio for re-transcription)
 $audioArchive = Join-Path $outDir 'Motesljud'              # kept meeting audio, purged after 7 days
 $keepAudioDays = 7
+# Start-of-meeting audio checks fire once each (mic peak early, system-audio seconds later).
+$micCheckSec = if ($env:DIKTATORN_MICCHECK_SEC) { [int]$env:DIKTATORN_MICCHECK_SEC } else { 8 }
+$sysCheckSec = if ($env:DIKTATORN_SYSCHECK_SEC) { [int]$env:DIKTATORN_SYSCHECK_SEC } else { 35 }
 # Crocodile warning (big mouth, small ears): rolling-window talk-share alert during meetings.
 $crocWinSec      = if ($env:DIKTATORN_CROC_WIN_SEC)      { [int]$env:DIKTATORN_CROC_WIN_SEC }      else { 600 }
 $crocPct         = if ($env:DIKTATORN_CROC_PCT)          { [int]$env:DIKTATORN_CROC_PCT }          else { 70 }
@@ -178,6 +181,21 @@ public class MeetingRecorder {
     int index = 0;
     int chunkMs;
     volatile bool micOn = false, running = false, sysFaulted = false, micFaulted = false;
+    // Live level metering so the PS side can warn a few seconds in if a stream is
+    // silent (muted mic, or loopback capturing the wrong/idle playback device) -
+    // a silent meeting otherwise only shows up as an empty transcript afterward.
+    long micBytesTotal = 0, sysBytesTotal = 0;
+    volatile float micPeakLevel = 0f;
+    public float MicPeak { get { return micPeakLevel; } }
+    public double MicSeconds { get { return Interlocked.Read(ref micBytesTotal) / 32000.0; } }   // 16 kHz * 2 bytes
+    public double SysSeconds {
+        get {
+            int bps = 1;
+            try { if (sys != null) bps = sys.WaveFormat.AverageBytesPerSecond; } catch { }
+            if (bps <= 0) bps = 1;
+            return Interlocked.Read(ref sysBytesTotal) / (double)bps;
+        }
+    }
     public bool MicCaptured { get { return micOn; } }
     public bool SysFaulted { get { return sysFaulted; } }
     public bool MicFaulted { get { return micFaulted; } }
@@ -195,7 +213,7 @@ public class MeetingRecorder {
         mic = new WaveInEvent();
         SynchronizationContext.SetSynchronizationContext(prev);
         sysW = new WaveFileWriter(SysPath(0), sys.WaveFormat);
-        sys.DataAvailable += (s, e) => { lock (sysLock) { if (sysW != null) { try { sysW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } };
+        sys.DataAvailable += (s, e) => { lock (sysLock) { if (sysW != null) { try { sysW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } Interlocked.Add(ref sysBytesTotal, e.BytesRecorded); };
         sys.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) sysFaulted = true; lock (sysLock) { SafeDispose(sysW); sysW = null; } try { sys.Dispose(); } catch { } sysStopped.Set(); };
         sysStopped.Reset();
         sys.StartRecording();
@@ -204,7 +222,17 @@ public class MeetingRecorder {
             mic.DeviceNumber = micDevice;
             mic.WaveFormat = new WaveFormat(16000, 16, 1);
             micW = new WaveFileWriter(MicPath(0), mic.WaveFormat);
-            mic.DataAvailable += (s, e) => { lock (micLock) { if (micW != null) { try { micW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } };
+            mic.DataAvailable += (s, e) => {
+                lock (micLock) { if (micW != null) { try { micW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } }
+                Interlocked.Add(ref micBytesTotal, e.BytesRecorded);
+                float p = 0f;                                          // 16-bit PCM peak, 0..1
+                for (int i = 0; i + 1 < e.BytesRecorded; i += 2) {
+                    short v = (short)(e.Buffer[i] | (e.Buffer[i + 1] << 8));
+                    float a = Math.Abs((int)v) / 32768f;
+                    if (a > p) p = a;
+                }
+                if (p > micPeakLevel) micPeakLevel = p;
+            };
             mic.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) micFaulted = true; lock (micLock) { SafeDispose(micW); micW = null; } try { mic.Dispose(); } catch { } micStopped.Set(); };
             micStopped.Reset();
             mic.StartRecording();
@@ -1566,6 +1594,7 @@ function Start-Meeting {
         $script:meetAnalysis = $script:talanalys           # snapshot: mid-meeting toggles apply to the NEXT meeting
         $script:meetModeActive = $script:meetMode          # snapshot: live or deferred for THIS meeting
         $script:meetKeepAudio = $script:keepAudio          # snapshot: a mid-meeting toggle mustn't half-retain
+        $script:meetMicChecked = $false; $script:meetSysChecked = $false   # one-shot start-of-meeting audio checks
         $script:meetFinishing = $false
         $script:meetFillers = @{}; $script:meetQuestions = 0; $script:meetCoach = $null
         $script:chunkListYou = New-Object 'System.Collections.Generic.List[double]'
@@ -1663,7 +1692,35 @@ function Stop-Meeting {
 $meetTimer = New-Object System.Windows.Forms.Timer
 $meetTimer.Interval = 1000
 $meetTimer.add_Tick({
-    if (-not $script:meeting -or $script:meetBusy) { return }
+    if (-not $script:meeting) { return }
+    # One-shot start-of-meeting audio checks: catch a silent capture in seconds,
+    # not after the meeting. Mic peak flags a muted/dead mic (~8 s); system-audio
+    # seconds flags loopback capturing the wrong/idle playback device (~35 s, long
+    # enough that a real meeting has produced some far-side audio). Cheap; runs
+    # before the transcription-busy gate so the timing is reliable.
+    $elapsed = ((Get-Date) - $script:meetStart).TotalSeconds
+    if (-not $script:meetMicChecked -and $elapsed -ge $micCheckSec) {
+        $script:meetMicChecked = $true
+        try {
+            if (-not $script:meetRec.MicCaptured) {
+                Write-Log 'Ljudkontroll: mikrofonen kunde inte oppnas'
+                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Mikrofonen kunde inte oppnas - din rost spelas inte in. Valj en annan mikrofon i menyn.', 'Warning')
+            } elseif ($script:meetRec.MicPeak -lt 0.01) {
+                Write-Log ("Ljudkontroll: mikrofon tyst (peak {0:N4})" -f $script:meetRec.MicPeak)
+                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Mikrofonen verkar tyst - din rost spelas kanske inte in. Kontrollera att ratt mikrofon ar vald och inte avstangd.', 'Warning')
+            }
+        } catch {}
+    }
+    if (-not $script:meetSysChecked -and $elapsed -ge $sysCheckSec) {
+        $script:meetSysChecked = $true
+        try {
+            if ($script:meetRec.SysSeconds -lt 2) {
+                Write-Log ("Ljudkontroll: inget datorljud ({0:N1}s pa {1:N0}s)" -f $script:meetRec.SysSeconds, $elapsed)
+                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Inget datorljud har horts - de andra deltagarna spelas kanske inte in. Kontrollera att motesljudet gar via ratt uppspelningsenhet (t.ex. inte ett headset som inte fangas).', 'Warning')
+            }
+        } catch {}
+    }
+    if ($script:meetBusy) { return }
     $script:meetBusy = $true
     try {
         $ready = $script:meetRec.ChunkIndex

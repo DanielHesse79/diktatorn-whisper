@@ -81,6 +81,19 @@ innan du startar.
 Byter ni språk mitt i mötet blir det block på fel språk oavsett inställning – välj det språk som
 dominerar.
 
+### Ljudkontroll vid start
+
+Några sekunder in i mötet mäter Diktatorn ljudet och varnar direkt om något är tyst – innan du hinner
+prata i onödan:
+
+- **"Mikrofonen verkar tyst"** – din röst når inte inspelningen. Kontrollera att rätt mikrofon är vald
+  (tray → Mikrofon) och att den inte är avstängd.
+- **"Inget datorljud har hörts"** – de andra deltagarna spelas inte in. Vanligaste orsaken: mötesljudet
+  går till ett headset som inte är datorns standard-uppspelningsenhet, så Diktatorn fångar tystnad.
+  Byt uppspelningsenhet i Windows ljudinställningar.
+
+Den här kontrollen finns för att ett tyst möte annars bara märks efteråt, som ett tomt transkript.
+
 ### Spara mötesljudet (säkerhetskopia)
 
 Tray-menyn → **Spara mötesljud (7 dagar)**. Normalt raderas ljudet direkt efter transkribering.
