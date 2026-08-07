@@ -186,7 +186,10 @@ public class MeetingRecorder {
     // a silent meeting otherwise only shows up as an empty transcript afterward.
     long micBytesTotal = 0, sysBytesTotal = 0;
     volatile float micPeakLevel = 0f;
+    volatile float micLevelNow = 0f, sysLevelNow = 0f;   // last-buffer peak, for live VU meters
     public float MicPeak { get { return micPeakLevel; } }
+    public float MicLevel { get { return micLevelNow; } }
+    public float SysLevel { get { return sysLevelNow; } }
     public double MicSeconds { get { return Interlocked.Read(ref micBytesTotal) / 32000.0; } }   // 16 kHz * 2 bytes
     public double SysSeconds {
         get {
@@ -213,7 +216,15 @@ public class MeetingRecorder {
         mic = new WaveInEvent();
         SynchronizationContext.SetSynchronizationContext(prev);
         sysW = new WaveFileWriter(SysPath(0), sys.WaveFormat);
-        sys.DataAvailable += (s, e) => { lock (sysLock) { if (sysW != null) { try { sysW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } } Interlocked.Add(ref sysBytesTotal, e.BytesRecorded); };
+        sys.DataAvailable += (s, e) => {
+            lock (sysLock) { if (sysW != null) { try { sysW.Write(e.Buffer, 0, e.BytesRecorded); } catch { } } }
+            Interlocked.Add(ref sysBytesTotal, e.BytesRecorded);
+            float sp = 0f;                                        // instantaneous peak, 0..1
+            int bits = 16; try { bits = sys.WaveFormat.BitsPerSample; } catch { }
+            if (bits == 32) { for (int i = 0; i + 3 < e.BytesRecorded; i += 4) { float v = BitConverter.ToSingle(e.Buffer, i); float a = Math.Abs(v); if (a > sp) sp = a; } }
+            else { for (int i = 0; i + 1 < e.BytesRecorded; i += 2) { short v = (short)(e.Buffer[i] | (e.Buffer[i + 1] << 8)); float a = Math.Abs((int)v) / 32768f; if (a > sp) sp = a; } }
+            sysLevelNow = sp;
+        };
         sys.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) sysFaulted = true; lock (sysLock) { SafeDispose(sysW); sysW = null; } try { sys.Dispose(); } catch { } sysStopped.Set(); };
         sysStopped.Reset();
         sys.StartRecording();
@@ -231,6 +242,7 @@ public class MeetingRecorder {
                     float a = Math.Abs((int)v) / 32768f;
                     if (a > p) p = a;
                 }
+                micLevelNow = p;
                 if (p > micPeakLevel) micPeakLevel = p;
             };
             mic.RecordingStopped += (s, e) => { if (e != null && e.Exception != null) micFaulted = true; lock (micLock) { SafeDispose(micW); micW = null; } try { mic.Dispose(); } catch { } micStopped.Set(); };
@@ -933,9 +945,309 @@ $miORKey.add_Click({
 })
 [void]$menu.Items.Add('-')
 $miQuit = $menu.Items.Add('Avsluta')
+# Dashboard entry at the very top of the menu, plus double-click on the tray icon.
+$miDash = New-Object System.Windows.Forms.ToolStripMenuItem 'Oppna Diktatorn...'
+$miDash.Font = New-Object System.Drawing.Font($miDash.Font, [System.Drawing.FontStyle]::Bold)
+$miDash.add_Click({ Open-Dashboard })
+$menu.Items.Insert(0, $miDash)
+$menu.Items.Insert(1, (New-Object System.Windows.Forms.ToolStripSeparator))
 $tray.ContextMenuStrip = $menu
+$tray.add_MouseDoubleClick({ param($s, $e) if ($e.Button -eq 'Left') { Open-Dashboard } })
 
 function Set-Status([string]$txt, $icon) { $tray.Text = ('Diktatorn - ' + $txt); $tray.Icon = $icon }
+
+# ============================================================================
+# Dashboard window: one place for live meeting, settings, history, talanalys.
+# The tray icon + hotkeys stay the fast path; this complements them. All state
+# is $script:-scoped so tab-builder closures survive past Open-Dashboard's return.
+# ============================================================================
+$script:dashForm = $null
+# Shared GPU switch so the dashboard and tray don't drift. Writes config, reloads
+# the model on the new adapter, warns if it's integrated (30x slower).
+function Set-Gpu([string]$chosen) {
+    if (-not $chosen) { return }
+    try { [System.IO.File]::WriteAllText($gpuCfg, $chosen) } catch {}
+    $script:adapter = $chosen
+    if ($script:gpuMenuItems) { foreach ($it in $script:gpuMenuItems) { $it.Checked = ($it.Tag -eq $chosen) } }
+    Set-Status 'byter grafikkort...' $icoWork
+    try {
+        Reload-Model $script:modelFile
+        if (Test-DiscreteAdapter $chosen) { $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info') }
+        else { $tray.ShowBalloonTip(7000, 'Diktatorn', "Anvander nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket langsam.", 'Warning') }
+    } catch {
+        Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
+        $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte anvanda $chosen", 'Error')
+    }
+    Set-Status 'redo' $icoIdle
+}
+function Open-Dashboard {
+    if ($script:dashForm -and -not $script:dashForm.IsDisposed) { $script:dashForm.Activate(); $script:dashForm.WindowState = 'Normal'; return }
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = 'Diktatorn'
+    $f.Size = New-Object System.Drawing.Size(760, 620)
+    $f.MinimumSize = New-Object System.Drawing.Size(620, 480)
+    $f.StartPosition = 'CenterScreen'
+    try { $f.Icon = $icoIdle } catch {}
+    $script:dashForm = $f
+
+    $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Dock = 'Fill'; $tabs.Padding = New-Object System.Drawing.Point(12, 6)
+    $f.Controls.Add($tabs)
+
+    $script:dashTabLive     = New-Object System.Windows.Forms.TabPage 'Mote'
+    $script:dashTabSettings = New-Object System.Windows.Forms.TabPage 'Installningar'
+    $script:dashTabHistory  = New-Object System.Windows.Forms.TabPage 'Historik'
+    $script:dashTabTrend    = New-Object System.Windows.Forms.TabPage 'Talanalys'
+    foreach ($t in @($script:dashTabLive, $script:dashTabSettings, $script:dashTabHistory, $script:dashTabTrend)) {
+        $t.BackColor = [System.Drawing.SystemColors]::Control
+        [void]$tabs.TabPages.Add($t)
+    }
+
+    Build-LiveTab     $script:dashTabLive
+    Build-SettingsTab $script:dashTabSettings
+    Build-HistoryTab  $script:dashTabHistory
+    Build-TrendTab    $script:dashTabTrend
+
+    # Refresh the live tab while the window is open (cheap; only the live tab redraws).
+    $script:dashTimer = New-Object System.Windows.Forms.Timer
+    $script:dashTimer.Interval = 1000
+    $script:dashTimer.add_Tick({ try { Update-LiveTab } catch {} })
+    $f.add_Shown({ $script:dashTimer.Start() })
+    $f.add_FormClosing({
+        try { $script:dashTimer.Stop() } catch {}
+        # Refresh history/trend next open; hide instead of dispose so reopening is instant
+        $_.Cancel = $true
+        $script:dashForm.Hide()
+    })
+    $f.Show()
+    Refresh-HistoryList
+    Refresh-TrendView
+}
+
+# Placeholder builders — filled in by later stages. Each just needs to exist so
+# the scaffold compiles and opens; real content is added tab by tab.
+function Build-LiveTab($tab) {
+    $font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $y = 14
+    $script:dashLiveStatus = New-Object System.Windows.Forms.Label
+    $script:dashLiveStatus.Location = New-Object System.Drawing.Point(14, $y); $script:dashLiveStatus.AutoSize = $true
+    $script:dashLiveStatus.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+    $tab.Controls.Add($script:dashLiveStatus); $y += 40
+
+    # Talk-share bar (you vs others), widths set live
+    $lblTalk = New-Object System.Windows.Forms.Label
+    $lblTalk.Text = 'Talandel'; $lblTalk.Location = New-Object System.Drawing.Point(14, $y); $lblTalk.AutoSize = $true; $lblTalk.Font = $font
+    $tab.Controls.Add($lblTalk); $y += 22
+    $talkHost = New-Object System.Windows.Forms.Panel
+    $talkHost.Location = New-Object System.Drawing.Point(14, $y); $talkHost.Size = New-Object System.Drawing.Size(680, 26)
+    $talkHost.BorderStyle = 'FixedSingle'
+    $script:dashTalkYou = New-Object System.Windows.Forms.Panel
+    $script:dashTalkYou.BackColor = [System.Drawing.Color]::FromArgb(70,120,210); $script:dashTalkYou.Dock = 'Left'; $script:dashTalkYou.Width = 0
+    $script:dashTalkOthers = New-Object System.Windows.Forms.Panel
+    $script:dashTalkOthers.BackColor = [System.Drawing.Color]::FromArgb(150,150,150); $script:dashTalkOthers.Dock = 'Fill'
+    $talkHost.Controls.Add($script:dashTalkOthers); $talkHost.Controls.Add($script:dashTalkYou)
+    $tab.Controls.Add($talkHost); $y += 30
+    $script:dashTalkLabel = New-Object System.Windows.Forms.Label
+    $script:dashTalkLabel.Location = New-Object System.Drawing.Point(14, $y); $script:dashTalkLabel.AutoSize = $true; $script:dashTalkLabel.Font = $font
+    $tab.Controls.Add($script:dashTalkLabel); $y += 34
+
+    # Live level meters + health
+    function Add-Meter($caption, $yy) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $caption; $l.Location = New-Object System.Drawing.Point(14, $yy); $l.Size = New-Object System.Drawing.Size(150, 22); $l.Font = $font
+        $pb = New-Object System.Windows.Forms.ProgressBar
+        $pb.Location = New-Object System.Drawing.Point(170, $yy); $pb.Size = New-Object System.Drawing.Size(430, 20); $pb.Minimum = 0; $pb.Maximum = 100
+        $tag = New-Object System.Windows.Forms.Label
+        $tag.Location = New-Object System.Drawing.Point(610, $yy); $tag.Size = New-Object System.Drawing.Size(90, 22); $tag.Font = $font
+        $tab.Controls.Add($l); $tab.Controls.Add($pb); $tab.Controls.Add($tag)
+        return @{ bar = $pb; tag = $tag }
+    }
+    $mMic = Add-Meter 'Din mikrofon' $y; $y += 26
+    $mSys = Add-Meter 'Datorljud (ovriga)' $y; $y += 34
+    $script:dashMicBar = $mMic.bar; $script:dashMicTag = $mMic.tag
+    $script:dashSysBar = $mSys.bar; $script:dashSysTag = $mSys.tag
+
+    $script:dashCroc = New-Object System.Windows.Forms.Label
+    $script:dashCroc.Location = New-Object System.Drawing.Point(14, $y); $script:dashCroc.AutoSize = $true
+    $script:dashCroc.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $tab.Controls.Add($script:dashCroc); $y += 26
+    $script:dashScriptLbl = New-Object System.Windows.Forms.Label
+    $script:dashScriptLbl.Location = New-Object System.Drawing.Point(14, $y); $script:dashScriptLbl.AutoSize = $true; $script:dashScriptLbl.Font = $font
+    $tab.Controls.Add($script:dashScriptLbl); $y += 30
+
+    $lblTr = New-Object System.Windows.Forms.Label
+    $lblTr.Text = 'Transkript (live)'; $lblTr.Location = New-Object System.Drawing.Point(14, $y); $lblTr.AutoSize = $true; $lblTr.Font = $font
+    $tab.Controls.Add($lblTr); $y += 22
+    $script:dashTranscript = New-Object System.Windows.Forms.TextBox
+    $script:dashTranscript.Multiline = $true; $script:dashTranscript.ReadOnly = $true; $script:dashTranscript.ScrollBars = 'Vertical'
+    $script:dashTranscript.Location = New-Object System.Drawing.Point(14, $y)
+    $script:dashTranscript.Size = New-Object System.Drawing.Size(686, 140)
+    $script:dashTranscript.Anchor = 'Top,Left,Right,Bottom'
+    $script:dashTranscript.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $tab.Controls.Add($script:dashTranscript)
+    Update-LiveTab
+}
+
+function Update-LiveTab {
+    if (-not $script:dashLiveStatus) { return }
+    if ($script:meeting) {
+        $mins = [int](((Get-Date) - $script:meetStart).TotalMinutes)
+        $secs = [int](((Get-Date) - $script:meetStart).TotalSeconds) % 60
+        $script:dashLiveStatus.Text = ('MOTE PAGAR - {0:00}:{1:00}' -f $mins, $secs)
+        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::FromArgb(70,120,210)
+    } elseif ($script:meetFinishing) {
+        $script:dashLiveStatus.Text = 'Transkriberar motet...'
+        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::FromArgb(230,180,40)
+    } else {
+        $script:dashLiveStatus.Text = 'Inget mote pagar - tryck Ctrl+Shift+M'
+        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::Gray
+    }
+
+    $you = [double]$script:meetSecsYou; $oth = [double]$script:meetSecsOthers; $tot = $you + $oth
+    if ($tot -gt 0) {
+        $pctYou = [int][math]::Round(100 * $you / $tot)
+        $script:dashTalkYou.Width = [int][math]::Round(($script:dashTalkYou.Parent.ClientSize.Width) * $you / $tot)
+        $script:dashTalkLabel.Text = "Du $pctYou%  |  Ovriga $((100-$pctYou))%   ($([math]::Round($you/60,1)) / $([math]::Round($oth/60,1)) min)"
+    } else {
+        $script:dashTalkYou.Width = 0
+        $script:dashTalkLabel.Text = 'Du 0%  |  Ovriga 0%'
+    }
+
+    # Live meters (instantaneous peak, scaled so speech ~0.1 reads mid-bar)
+    $rec = $script:meetRec
+    $micL = 0.0; $sysL = 0.0; $micOk = $false; $sysOk = $false
+    if ($script:meeting -and $rec) {
+        try { $micL = [double]$rec.MicLevel; $sysL = [double]$rec.SysLevel } catch {}
+        try { $micOk = ($rec.MicCaptured -and $rec.MicPeak -ge 0.01); $sysOk = ($rec.SysSeconds -ge 2) } catch {}
+    }
+    $script:dashMicBar.Value = [math]::Max(0, [math]::Min(100, [int]($micL * 300)))
+    $script:dashSysBar.Value = [math]::Max(0, [math]::Min(100, [int]($sysL * 300)))
+    if (-not $script:meeting) { $script:dashMicTag.Text = ''; $script:dashSysTag.Text = '' }
+    else {
+        $script:dashMicTag.Text = $(if ($micOk) { 'OK' } else { 'TYST?' })
+        $script:dashMicTag.ForeColor = $(if ($micOk) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::FromArgb(200,60,60) })
+        $script:dashSysTag.Text = $(if ($sysOk) { 'OK' } else { 'TYST?' })
+        $script:dashSysTag.ForeColor = $(if ($sysOk) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::FromArgb(200,60,60) })
+    }
+
+    # Crocodile: rolling-window talk share (reuse the meeting's own chunk lists)
+    $croc = ''
+    if ($script:meeting -and $script:chunkListYou -and $script:chunkListYou.Count -ge 1) {
+        $win = [math]::Max(1, [math]::Ceiling($crocWinSec / $chunkSec))
+        $n = $script:chunkListYou.Count; $a = [math]::Max(0, $n - $win)
+        $wy = 0.0; $wo = 0.0
+        for ($k = $a; $k -lt $n; $k++) { $wy += $script:chunkListYou[$k]; $wo += $script:chunkListOthers[$k] }
+        $wt = $wy + $wo
+        if ($wt -gt 0 -and (100 * $wy / $wt) -ge $crocPct) {
+            $script:dashCroc.Text = 'Krokodilvarning: du pratar mer an du lyssnar - stor mun, sma oron'
+            $script:dashCroc.ForeColor = [System.Drawing.Color]::FromArgb(200,60,60)
+        } else { $script:dashCroc.Text = '' }
+    } else { $script:dashCroc.Text = '' }
+
+    # Script checklist progress (if the checklist window is open)
+    if ($script:scriptChecks -and @($script:scriptChecks).Count -gt 0) {
+        $done = @($script:scriptChecks | Where-Object { $_.Checked }).Count
+        $script:dashScriptLbl.Text = "Saljscript: $done / $(@($script:scriptChecks).Count) avklarat"
+    } else { $script:dashScriptLbl.Text = '' }
+
+    # Transcript preview: last ~25 lines
+    if ($script:meetLines -and $script:meetLines.Count -gt 0) {
+        $tail = @($script:meetLines | Select-Object -Last 25) -join "`r`n"
+        if ($script:dashTranscript.Text -ne $tail) {
+            $script:dashTranscript.Text = $tail
+            $script:dashTranscript.SelectionStart = $script:dashTranscript.Text.Length
+            $script:dashTranscript.ScrollToCaret()
+        }
+    } elseif ($script:dashTranscript.Text) { $script:dashTranscript.Text = '' }
+}
+function Build-SettingsTab($tab) {
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = 'Fill'; $panel.ColumnCount = 2; $panel.AutoScroll = $true
+    $panel.Padding = '10,10,10,10'
+    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 210)))
+    [void]$panel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+    $tab.Controls.Add($panel)
+
+    # Add a labelled dropdown. $items = display strings, $tags = matching values,
+    # $current = value to preselect, $onPick = { param($val) ... }. Handler is wired
+    # AFTER preselecting, so loading the current value doesn't fire a redundant Set-*.
+    function Add-Row($label, $items, $tags, $current, $onPick) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $label; $lbl.AutoSize = $false; $lbl.Width = 200; $lbl.Height = 28
+        $lbl.TextAlign = 'MiddleLeft'; $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+        $cb = New-Object System.Windows.Forms.ComboBox
+        $cb.DropDownStyle = 'DropDownList'; $cb.Width = 460
+        $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+        foreach ($it in $items) { [void]$cb.Items.Add($it) }
+        $cb.Tag = @{ tags = $tags; onPick = $onPick }
+        $ix = [array]::IndexOf($tags, $current); if ($ix -lt 0) { $ix = 0 }
+        if ($cb.Items.Count -gt 0) { $cb.SelectedIndex = $ix }
+        $cb.add_SelectedIndexChanged({
+            $meta = $this.Tag
+            & $meta.onPick $meta.tags[$this.SelectedIndex]
+        })
+        $panel.Controls.Add($lbl); $panel.Controls.Add($cb)
+        return $cb
+    }
+
+    # Microphone
+    $micNames = @($script:micNames); $micIdx = @(0..([math]::Max(0,$micNames.Count-1)))
+    [void](Add-Row 'Mikrofon' $micNames $micIdx $script:micDevice { param($v) Set-MicDevice ([int]$v) })
+    # Model
+    $mLabels = @($modelChoices.Keys); $mFiles = @($modelChoices.Values)
+    [void](Add-Row 'Modell (kvalitet)' $mLabels $mFiles $script:modelFile { param($v) Set-Model ([string]$v) })
+    # Backend
+    [void](Add-Row 'Transkribering' @('Lokal (GPU, privat)','Groq moln (snabbt)') @('local','groq') $script:backend { param($v) Set-Backend ([string]$v) })
+    # GPU (only if more than one adapter)
+    if ($script:adapters.Count -gt 1) {
+        [void](Add-Row 'Grafikkort' @($script:adapters) @($script:adapters) $script:adapter { param($v) Set-Gpu ([string]$v) })
+    }
+    # Meeting mode
+    [void](Add-Row 'Motestranskribering' @('Live (vaxande)','Efter motet') @('live','deferred') $script:meetMode { param($v) Set-MeetMode ([string]$v) })
+    # Meeting language
+    [void](Add-Row 'Motessprak' @('Svenska','Engelska') @('sv','en') $script:meetLang { param($v) Set-MeetLang ([string]$v) })
+    # Coach engine
+    [void](Add-Row 'Coach-motor' @('Groq (gratis moln)','Ollama (lokal)','OpenRouter') @('groq','ollama','openrouter') $script:coach { param($v) Set-Coach ([string]$v) })
+    # Talanalys
+    [void](Add-Row 'Talanalys' @('Av','Statistik','AI-coach') @('off','stats','coach') $script:talanalys { param($v) Set-Talanalys ([string]$v) })
+
+    # Keep audio checkbox
+    $lblKA = New-Object System.Windows.Forms.Label
+    $lblKA.Text = "Spara motesljud ($keepAudioDays dgr)"; $lblKA.Width = 200; $lblKA.Height = 28; $lblKA.TextAlign = 'MiddleLeft'
+    $lblKA.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $chkKA = New-Object System.Windows.Forms.CheckBox
+    $chkKA.Text = 'Behall raljud for aterskapning'; $chkKA.AutoSize = $true; $chkKA.Checked = $script:keepAudio
+    $chkKA.Font = New-Object System.Drawing.Font('Segoe UI', 10); $chkKA.Margin = '3,6,3,3'
+    $chkKA.add_CheckedChanged({ Set-KeepAudio $this.Checked })
+    $panel.Controls.Add($lblKA); $panel.Controls.Add($chkKA)
+
+    # API key buttons
+    $lblKeys = New-Object System.Windows.Forms.Label
+    $lblKeys.Text = 'API-nycklar'; $lblKeys.Width = 200; $lblKeys.Height = 34; $lblKeys.TextAlign = 'MiddleLeft'
+    $lblKeys.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $keyPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $keyPanel.AutoSize = $true; $keyPanel.WrapContents = $false
+    $bGroq = New-Object System.Windows.Forms.Button
+    $bGroq.Text = 'Groq-nyckel...'; $bGroq.Width = 130; $bGroq.Height = 30
+    $bGroq.add_Click({
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din Groq API-nyckel (gsk_...):', 'Groq API-nyckel', (Get-GroqKey))
+        if ($val) { try { [System.IO.File]::WriteAllText($groqKeyFile, $val.Trim()); $tray.ShowBalloonTip(2500, 'Diktatorn', 'Groq-nyckel sparad.', 'Info') } catch {} }
+    })
+    $bOR = New-Object System.Windows.Forms.Button
+    $bOR.Text = 'OpenRouter-nyckel...'; $bOR.Width = 160; $bOR.Height = 30
+    $bOR.add_Click({
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din OpenRouter API-nyckel (sk-or-...):', 'OpenRouter API-nyckel', (Get-CoachKey 'openrouter'))
+        if ($val) { try { [System.IO.File]::WriteAllText($openrouterKeyFile, $val.Trim()); $tray.ShowBalloonTip(2500, 'Diktatorn', 'OpenRouter-nyckel sparad.', 'Info') } catch {} }
+    })
+    [void]$keyPanel.Controls.Add($bGroq); [void]$keyPanel.Controls.Add($bOR)
+    $panel.Controls.Add($lblKeys); $panel.Controls.Add($keyPanel)
+}
+function Build-HistoryTab($tab)  { }
+function Refresh-HistoryList     { }
+function Build-TrendTab($tab)    { }
+function Refresh-TrendView       { }
 
 # --- Shared transcription ---
 # $lang = '' (or $null) means auto-detect (WhisperPS auto-detects when -language is omitted).
