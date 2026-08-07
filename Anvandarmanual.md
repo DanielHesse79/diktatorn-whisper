@@ -198,6 +198,23 @@ försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råka
 
 ---
 
+## 3d. Diktatorn-fönstret (dashboard)
+
+Dubbelklicka på systemfältsikonen (eller högerklicka → **Öppna Diktatorn...**) för att öppna ett fönster
+med fyra flikar. Tray-ikonen och kortkommandona finns kvar som snabbvägar – fönstret är ett komplement.
+
+- **Möte** – visas live medan ett möte pågår: tid, talandel (du mot övriga), nivåmätare för din mikrofon
+  och datorljudet med **OK/TYST?**-markering, krokodilvarning, säljscript-status och det växande
+  transkriptet. Här ser du direkt om något är tyst.
+- **Inställningar** – allt på ett ställe: mikrofon, modell, transkribering (lokal/moln), grafikkort,
+  mötesläge, mötesspråk, coach-motor, talanalys, spara-ljud och API-nycklar.
+- **Historik** – alla dina möten. Öppna transkript, öppna ljudmappen, eller **Återskapa transkript** från
+  sparat ljud (välj språk) – så kan ett möte transkriberas om, t.ex. om språket blev fel.
+- **Talanalys** – trenden över dina möten som tabell och en graf över talandel, där staplar över 70 %
+  (krokodilgränsen) blir röda.
+
+---
+
 ## 4. Tray-menyn (högerklicka ikonen)
 
 | Val | Vad det gör |

@@ -981,7 +981,14 @@ function Set-Gpu([string]$chosen) {
     Set-Status 'redo' $icoIdle
 }
 function Open-Dashboard {
-    if ($script:dashForm -and -not $script:dashForm.IsDisposed) { $script:dashForm.Activate(); $script:dashForm.WindowState = 'Normal'; return }
+    if ($script:dashForm -and -not $script:dashForm.IsDisposed) {
+        # Reopen a hidden window: Show it (Activate alone won't un-hide), refresh
+        # the data tabs, and restart the live timer that FormClosing stopped.
+        $script:dashForm.Show(); $script:dashForm.WindowState = 'Normal'; $script:dashForm.Activate()
+        Refresh-HistoryList; Refresh-TrendView
+        try { $script:dashTimer.Start() } catch {}
+        return
+    }
     $f = New-Object System.Windows.Forms.Form
     $f.Text = 'Diktatorn'
     $f.Size = New-Object System.Drawing.Size(760, 620)
@@ -1244,10 +1251,189 @@ function Build-SettingsTab($tab) {
     [void]$keyPanel.Controls.Add($bGroq); [void]$keyPanel.Controls.Add($bOR)
     $panel.Controls.Add($lblKeys); $panel.Controls.Add($keyPanel)
 }
-function Build-HistoryTab($tab)  { }
-function Refresh-HistoryList     { }
-function Build-TrendTab($tab)    { }
-function Refresh-TrendView       { }
+# Re-transcribe a saved meeting's archived chunk audio in the chosen language.
+# Turns the manual recovery script into a feature; hardened against the broken
+# header of whichever chunk was recording when a meeting ended abruptly.
+function Rebuild-Transcript($audioDir, $lang, $outFile, $statusLabel) {
+    $wavs = @(Get-ChildItem $audioDir -Filter 'chunk_*.wav' -ErrorAction SilentlyContinue)
+    $items = @()
+    foreach ($w in $wavs) {
+        if ($w.Name -match 'chunk_(\d+)_(sys|mic)\.wav') {
+            $items += [pscustomobject]@{ idx = [int]$Matches[1]; kind = $Matches[2]; wav = $w.FullName;
+                label = $(if ($Matches[2] -eq 'mic') { $labelYou } else { $labelOthers }) }
+        }
+    }
+    $items = @($items | Sort-Object idx, kind)   # sys before mic within a chunk
+    if ($items.Count -eq 0) { throw 'Inget chunk-ljud i mappen' }
+    $lines = @("Mote (aterskapat $(Get-Date -Format 'yyyy-MM-dd HH:mm'), sprak: $lang)", ('=' * 60), '')
+    $tmp = Join-Path $env:TEMP 'rebuild_clean.wav'
+    $done = 0
+    foreach ($c in $items) {
+        $done++
+        if ($statusLabel) { $statusLabel.Text = "Transkriberar $done / $($items.Count)..."; [System.Windows.Forms.Application]::DoEvents() }
+        if ((Get-Item $c.wav).Length -lt 16000) { continue }
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+        try { [AudioPrep]::Clean($c.wav, $tmp) }
+        catch {
+            try {  # salvage the abruptly-ended chunk: rewrap raw bytes past the header
+                $b = [System.IO.File]::ReadAllBytes($c.wav)
+                $w = New-Object NAudio.Wave.WaveFileWriter($tmp, (New-Object NAudio.Wave.WaveFormat(16000,16,1)))
+                $w.Write($b, 44, $b.Length - 44); $w.Dispose()
+            } catch { continue }
+        }
+        if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 16000) { continue }
+        try {
+            if ($script:backend -eq 'groq') {
+                $key = Get-GroqKey; if (-not $key) { throw 'Ingen Groq-nyckel' }
+                $text = ([Cloud]::Transcribe($key, $tmp, $groqModel, $lang)).Trim()
+            } else {
+                $seg = Transcribe-File -model $script:model -path $tmp -language $lang
+                $text = ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
+            }
+        } catch { continue }
+        if ($text -and $text -notmatch '^[\s\.\-\!\?]*$') {
+            $ts = '{0:00}:{1:00}' -f [math]::Floor($c.idx * 30 / 60), (($c.idx * 30) % 60)
+            $lines += "[00:$ts] $($c.label): $text"
+        }
+    }
+    [System.IO.File]::WriteAllText($outFile, ($lines -join "`r`n"), [System.Text.UTF8Encoding]::new($true))
+}
+
+function Build-HistoryTab($tab) {
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.Location = New-Object System.Drawing.Point(12, 12)
+    $lv.Size = New-Object System.Drawing.Size(710, 440)
+    $lv.Anchor = 'Top,Left,Right,Bottom'
+    $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.MultiSelect = $false
+    $lv.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    [void]$lv.Columns.Add('Mote', 300); [void]$lv.Columns.Add('Datum', 150); [void]$lv.Columns.Add('Ljud sparat', 220)
+    $tab.Controls.Add($lv)
+    $script:dashHistList = $lv
+
+    $bar = New-Object System.Windows.Forms.FlowLayoutPanel
+    $bar.Location = New-Object System.Drawing.Point(12, 458); $bar.Size = New-Object System.Drawing.Size(710, 40)
+    $bar.Anchor = 'Left,Right,Bottom'
+    $tab.Controls.Add($bar)
+    function HistBtn($text, $w, $handler) {
+        $b = New-Object System.Windows.Forms.Button; $b.Text = $text; $b.Width = $w; $b.Height = 30
+        $b.Font = New-Object System.Drawing.Font('Segoe UI', 9); $b.add_Click($handler); [void]$bar.Controls.Add($b); return $b
+    }
+    [void](HistBtn 'Uppdatera' 90 { Refresh-HistoryList })
+    [void](HistBtn 'Oppna transkript' 130 {
+        $it = @($script:dashHistList.SelectedItems)[0]
+        if ($it -and $it.Tag.txt -and (Test-Path $it.Tag.txt)) { Invoke-Item $it.Tag.txt }
+    })
+    [void](HistBtn 'Oppna ljudmapp' 120 {
+        $it = @($script:dashHistList.SelectedItems)[0]
+        if ($it -and $it.Tag.audio -and (Test-Path $it.Tag.audio)) { Invoke-Item $it.Tag.audio }
+        else { [void][System.Windows.Forms.MessageBox]::Show('Inget sparat ljud for det har motet.', 'Diktatorn') }
+    })
+    [void](HistBtn 'Aterskapa transkript...' 170 {
+        $it = @($script:dashHistList.SelectedItems)[0]
+        if (-not $it -or -not $it.Tag.audio -or -not (Test-Path $it.Tag.audio)) {
+            [void][System.Windows.Forms.MessageBox]::Show('Det har motet har inget sparat ljud att aterskapa fran. Sla pa "Spara motesljud" for framtida moten.', 'Diktatorn'); return
+        }
+        $lang = Show-MeetLangPrompt
+        if (-not $lang) { return }
+        $out = Join-Path $outDir ([System.IO.Path]::GetFileNameWithoutExtension($it.Tag.audio) + '_aterskapad.txt')
+        $script:dashForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        try {
+            Rebuild-Transcript $it.Tag.audio $lang $out $script:dashHistStatus
+            $script:dashHistStatus.Text = 'Klart.'
+            Refresh-HistoryList
+            Invoke-Item $out
+        } catch {
+            Write-Log "Aterskapa: $($_.Exception.Message)"
+            [void][System.Windows.Forms.MessageBox]::Show("Kunde inte aterskapa: $($_.Exception.Message)", 'Diktatorn')
+            $script:dashHistStatus.Text = 'Misslyckades.'
+        } finally { $script:dashForm.Cursor = [System.Windows.Forms.Cursors]::Default }
+    })
+    $script:dashHistStatus = New-Object System.Windows.Forms.Label
+    $script:dashHistStatus.AutoSize = $true; $script:dashHistStatus.Margin = '10,8,0,0'; $script:dashHistStatus.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    [void]$bar.Controls.Add($script:dashHistStatus)
+}
+
+function Refresh-HistoryList {
+    if (-not $script:dashHistList) { return }
+    $script:dashHistList.Items.Clear()
+    $txts = @(Get-ChildItem (Join-Path $outDir 'Mote_*.txt') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    foreach ($t in $txts) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($t.Name) -replace '_aterskapad$', ''
+        $audioDir = Join-Path $audioArchive $base
+        $hasAudio = Test-Path $audioDir
+        $li = New-Object System.Windows.Forms.ListViewItem($t.Name)
+        [void]$li.SubItems.Add($t.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
+        [void]$li.SubItems.Add($(if ($hasAudio) { "Ja ($(@(Get-ChildItem $audioDir -Filter *.wav -ErrorAction SilentlyContinue).Count) filer)" } else { '-' }))
+        $li.Tag = @{ txt = $t.FullName; audio = $(if ($hasAudio) { $audioDir } else { $null }) }
+        [void]$script:dashHistList.Items.Add($li)
+    }
+}
+function Build-TrendTab($tab) {
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.Location = New-Object System.Drawing.Point(12, 12); $lv.Size = New-Object System.Drawing.Size(710, 250)
+    $lv.Anchor = 'Top,Left,Right'; $lv.View = 'Details'; $lv.FullRowSelect = $true
+    $lv.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    [void]$lv.Columns.Add('Datum', 130); [void]$lv.Columns.Add('Langd (min)', 90)
+    [void]$lv.Columns.Add('Talandel %', 90); [void]$lv.Columns.Add('Utfyllnad/min', 100)
+    [void]$lv.Columns.Add('Fragor', 70); [void]$lv.Columns.Add('Langsta monolog', 120)
+    $tab.Controls.Add($lv); $script:dashTrendList = $lv
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = 'Talandel per mote (rott = over 70%, krokodilgransen)'; $lbl.Location = New-Object System.Drawing.Point(12, 270)
+    $lbl.AutoSize = $true; $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $tab.Controls.Add($lbl)
+
+    $chart = New-Object System.Windows.Forms.Panel
+    $chart.Location = New-Object System.Drawing.Point(12, 294); $chart.Size = New-Object System.Drawing.Size(710, 210)
+    $chart.Anchor = 'Top,Left,Right,Bottom'; $chart.BackColor = [System.Drawing.Color]::White; $chart.BorderStyle = 'FixedSingle'
+    $chart.add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $w = $s.ClientSize.Width; $h = $s.ClientSize.Height; $pad = 8
+        $rows = @($script:trendRows)
+        if ($rows.Count -eq 0) {
+            $g.DrawString('Ingen data an - kor ett mote med talanalys pa.', (New-Object System.Drawing.Font('Segoe UI', 10)), [System.Drawing.Brushes]::Gray, 12, ($h/2 - 10)); return
+        }
+        # 70% crocodile reference line
+        $y70 = $h - $pad - (($h - 2*$pad) * 0.70)
+        $penRef = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(200,200,200)); $penRef.DashStyle = 'Dash'
+        $g.DrawLine($penRef, $pad, $y70, ($w - $pad), $y70)
+        $g.DrawString('70%', (New-Object System.Drawing.Font('Segoe UI', 7)), [System.Drawing.Brushes]::Gray, ($w - $pad - 26), ($y70 - 14))
+        $show = @($rows | Select-Object -Last 24)
+        $bw = [math]::Max(6, [int](($w - 2*$pad) / [math]::Max(1, $show.Count)) - 4)
+        for ($i = 0; $i -lt $show.Count; $i++) {
+            $share = [double]$show[$i].share
+            $bh = [int](($h - 2*$pad) * ($share / 100.0))
+            $x = $pad + $i * [int](($w - 2*$pad) / $show.Count)
+            $col = if ($share -ge 70) { [System.Drawing.Color]::FromArgb(200,70,70) } else { [System.Drawing.Color]::FromArgb(70,120,210) }
+            $br = New-Object System.Drawing.SolidBrush $col
+            $g.FillRectangle($br, $x, ($h - $pad - $bh), $bw, $bh)
+            $br.Dispose()
+        }
+        $penRef.Dispose()
+    })
+    $tab.Controls.Add($chart); $script:dashTrendChart = $chart
+    Refresh-TrendView
+}
+
+function Refresh-TrendView {
+    if (-not $script:dashTrendList) { return }
+    $script:trendRows = @()
+    $script:dashTrendList.Items.Clear()
+    if (Test-Path $trendCsv) {
+        $lines = @(Get-Content $trendCsv -Encoding UTF8 | Select-Object -Skip 1 | Where-Object { $_ -and ($_ -match ';') })
+        foreach ($ln in $lines) {
+            $c = $ln -split ';'
+            if ($c.Count -lt 6) { continue }
+            $script:trendRows += [pscustomobject]@{ datum=$c[0]; mins=$c[1]; share=[double]($c[2]); fill=$c[3]; q=$c[4]; monolog=$c[5] }
+            $li = New-Object System.Windows.Forms.ListViewItem($c[0])
+            foreach ($v in @($c[1], $c[2], $c[3], $c[4], $c[5])) { [void]$li.SubItems.Add([string]$v) }
+            if ([double]$c[2] -ge 70) { $li.ForeColor = [System.Drawing.Color]::FromArgb(200,70,70) }
+            [void]$script:dashTrendList.Items.Add($li)
+        }
+    }
+    if ($script:dashTrendChart) { $script:dashTrendChart.Invalidate() }
+}
 
 # --- Shared transcription ---
 # $lang = '' (or $null) means auto-detect (WhisperPS auto-detects when -language is omitted).
@@ -2190,6 +2376,8 @@ $miQuit.add_Click({
     try { if ($script:meeting) { Stop-Meeting } } catch {}   # finish + save the transcript, don't lose it
     try { if ($script:dictating -or $script:journaling) { $script:micRec.Stop() } } catch {}
     try { if ($script:scriptForm -and -not $script:scriptForm.IsDisposed) { $script:scriptForm.Close() } } catch {}
+    try { if ($script:dashTimer) { $script:dashTimer.Stop() } } catch {}
+    try { if ($script:dashForm -and -not $script:dashForm.IsDisposed) { $script:dashForm.Dispose() } } catch {}
     $hk.Dispose(); $tray.Visible = $false; $appContext.ExitThread()
 })
 

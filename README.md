@@ -45,6 +45,12 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   from 1 to 3"). The coach engine is pluggable: **Groq** (free, default), **Ollama** (fully local), or
   **OpenRouter** (any model you like) — all via the same OpenAI-protocol call. The visible transcript
   stays clean; the analysis runs on a verbatim pass under the hood.
+- **Dashboard window** (double-click the tray icon, or *Öppna Diktatorn...*): a tabbed window that
+  complements the tray + hotkeys. **Möte** — live meeting view (elapsed, talk-share bar, mic/system VU
+  meters with OK/silent tags, crocodile warning, script progress, growing transcript). **Inställningar** —
+  all settings in one panel. **Historik** — past meetings, open transcripts, and **re-transcribe from
+  kept audio** in a chosen language (the recovery path made a feature). **Talanalys** — trend table plus a
+  talk-share chart (bars over the 70% crocodile line turn red).
 - **Voice journal** (`Ctrl+Shift+N`): speak a note and it's appended — with a timestamp heading — to
   `Documents\Journal\YYYY-MM-DD.md` instead of being typed at the cursor. Near-silent takes are
   rejected (measured RMS gate) so a mis-press never writes a Whisper-hallucinated entry into your journal.
