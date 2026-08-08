@@ -245,6 +245,22 @@ there's nothing to build.
 - Don't transcribe pure digital silence — it crashes the native library. Warm up on a real speech clip.
 - A Plexgear (and many) USB headsets enumerate as **"USB PnP Sound Device"**.
 
+## Tests
+
+`tests/` holds the regression suite. Each `Test-*.ps1` extracts the app's **real functions** from
+the source files (brace-counted, via `tests/_TestLib.ps1`) rather than testing hand-copied
+duplicates that drift — the same harness pattern that caught the script-manager scope bug, the
+language-popup closure bug, and the mistranslation default. Run it with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
+```
+
+Each test runs in its own Windows PowerShell 5.1 STA process (the app's runtime). Exit codes:
+0 = pass, 2 = skipped, other = fail. `Test-SilenceGate` needs `lib\NAudio.dll` (skips on a fresh
+clone until `Install-Diktatorn.ps1` has run); `Test-CoachEngine` calls the real Groq API and only
+runs with `-Network`. The suite takes ~8 s.
+
 ## Credits & license
 
 - Built on [Const-me/Whisper](https://github.com/Const-me/Whisper) — please respect its license; this repo
