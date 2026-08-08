@@ -371,6 +371,12 @@ function Stop-TaServer {
 
 function Start-Telefonassistent([string]$roll = 'svarare', [int]$tystnad = 400) {
     if ($script:taBridge) { return $true }
+    # Mirror of Start-Meeting's guard: meeting recording and the bridge both tap
+    # the system loopback, so they must never run at the same time.
+    if ($script:meeting -or $script:meetFinishing) {
+        $tray.ShowBalloonTip(5000, 'Telefonassistent', 'Ett mote spelas in - stoppa det forst (Ctrl+Shift+M).', 'Warning')
+        return $false
+    }
 
     $ut = Get-TaValdUtgang
     if (-not $ut) {

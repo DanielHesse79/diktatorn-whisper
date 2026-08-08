@@ -2076,6 +2076,13 @@ function Save-LiveTranscript([switch]$final) {
 
 function Start-Meeting {
     if ($script:meeting) { return }
+    # Both the meeting recorder and the phone assistant capture the system audio via
+    # loopback. Running both would put the assistant's own voice in the transcript
+    # as "Ovriga" and confuse the talk-time stats - refuse instead of interleaving.
+    if ($script:taBridge) {
+        $tray.ShowBalloonTip(5000, 'Diktatorn', 'Telefonassistenten ar aktiv - stoppa den forst. Bada lyssnar pa systemljudet.', 'Warning')
+        return
+    }
     if ($script:dictating) { Cancel-Dictation }   # a slow Ctrl+Shift+M chord can arm PTT dictation; drop it
     # Ask the meeting language up front — a wrong language silently mistranslates
     # the whole meeting, so make it a deliberate per-meeting choice. Cancel = abort.
