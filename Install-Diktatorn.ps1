@@ -70,7 +70,14 @@ Step 'Matar transkriberings-hastigheten pa din dator (ca 30-60 s)...'
 try {
     Import-Module (Join-Path $root 'WhisperPS\WhisperPS\WhisperPS.psd1') 3>$null
     $adapters = @(Get-Adapters)
-    $gpu = @($adapters | Where-Object { $_ -notlike '*Basic Render*' })[0]
+    # Prefer a discrete card by NAME, never by position: DirectX enumeration order is
+    # unstable across boots (observed flipping on the same machine), and on dual-GPU
+    # systems the integrated one is often first. Benchmarking on integrated graphics
+    # measured 0.3x realtime next to 10.9x on the discrete card beside it - which
+    # would mis-configure meeting mode to 'deferred' on a fast machine. Same logic
+    # as the app's Resolve-Adapter; keep the two in sync.
+    $gpu = @($adapters | Where-Object { $_ -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Radeon (RX|Pro)|Arc\b' })[0]
+    if (-not $gpu) { $gpu = @($adapters | Where-Object { $_ -notlike '*Basic Render*' })[0] }
     if (-not $gpu) { $gpu = $adapters[0] }
     Add-Type -AssemblyName System.Speech
     Add-Type -Path (Join-Path $root 'lib\NAudio.dll')
