@@ -250,9 +250,11 @@ there's nothing to build.
 `tests/` holds the regression suite. Each `Test-*.ps1` extracts the app's **real functions** from
 the source files (brace-counted, via `tests/_TestLib.ps1`) rather than testing hand-copied
 duplicates that drift — the same harness pattern that caught the script-manager scope bug, the
-language-popup closure bug, and the mistranslation default. Run it with:
+language-popup closure bug, and the mistranslation default. Run it from the repo folder (the
+runner itself resolves its tests via `$PSScriptRoot`, so only the path to it matters):
 
 ```powershell
+cd "path\to\Whisper Desktop"
 powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
 ```
 
