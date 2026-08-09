@@ -16,8 +16,12 @@ $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 # where extracted functions keep braces balanced in literals too.
 function Get-AppFunction([string]$file, [string]$name) {
     $src = Get-Content (Join-Path $script:RepoRoot $file) -Raw
-    $s = $src.IndexOf("function $name")
-    if ($s -lt 0) { throw "hittar inte 'function $name' i $file" }
+    # The name must end where the declaration does. A plain IndexOf("function X")
+    # also matches "function Xs" - asking for Get-CallApp silently handed back the
+    # body of Get-CallApps, and the requested function was simply never defined.
+    $m = [regex]::Match($src, ('(?m)^[ \t]*(function\s+' + [regex]::Escape($name) + '\s*[({])'))
+    if (-not $m.Success) { throw "hittar inte 'function $name' i $file" }
+    $s = $m.Groups[1].Index
     $depth = 0
     $i = $src.IndexOf('{', $s)
     for ($j = $i; $j -lt $src.Length; $j++) {
@@ -50,6 +54,21 @@ function Import-AppCSharp([string]$file, [string]$varName, [string]$probeType, [
     $m = [regex]::Match($src, "(?s)\`$$varName = @[`"']\r?\n(.*?)\r?\n[`"']@")
     if (-not $m.Success) { throw "hittar inte C#-blocket `$$varName i $file" }
     Add-Type -TypeDefinition $m.Groups[1].Value -ReferencedAssemblies $refs
+}
+
+# The shared UI layer (SvText, UiFont, the $script:ui* palette, New-UiCard) is used by
+# nearly every window, so any test that builds UI needs it. Import it as a unit.
+function Import-AppUi {
+    # The palette lines are [System.Drawing.Color] literals, so the assembly has
+    # to be loaded before they are evaluated - otherwise every $script:ui* stays
+    # null and the failure surfaces much later as a blank control.
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms
+    $src = Get-Content (Join-Path $script:RepoRoot 'Diktatorn.ps1') -Raw
+    foreach ($line in [regex]::Matches($src, '(?m)^\$script:ui\w+\s*=.*$')) {
+        . ([scriptblock]::Create($line.Value))
+    }
+    Import-AppFunction 'Diktatorn.ps1' @('SvText', 'UiFont', 'New-UiCard')
 }
 
 function Get-NAudioPath {

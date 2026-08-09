@@ -28,6 +28,7 @@
 $script:taServer    = 'http://localhost:3000'
 $script:taOutCfg    = Join-Path $PSScriptRoot 'diktatorn-telefon-utgang.txt'
 $script:taRootCfg   = Join-Path $PSScriptRoot 'diktatorn-telefon-server.txt'
+$script:taAppCfg    = Join-Path $PSScriptRoot 'diktatorn-telefon-app.txt'
 $script:taBridge    = $null
 $script:taNode      = $null
 $script:taRoll      = 'svarare'
@@ -336,6 +337,88 @@ function Set-TaUtgang([string]$namn) {
     try { [System.IO.File]::WriteAllText($script:taOutCfg, $namn) } catch { }
 }
 
+# --- Ringa fran UI:t ------------------------------------------------------------
+#
+# Detta ringer INTE sjalvt. Bryggan ar app-agnostisk med flit, och ingen av
+# samtalsapparna exponerar ett API for att koppla upp ett samtal. Det som gar att
+# gora ar att lamna over numret till appen som redan ager telefonin, sa att man
+# slipper leta fram fonstret och knappa in det igen. Ljudvagen ar oforandrad:
+# loopback in, CABLE Input ut. Ett riktigt "ring harifran" kraver en SIP-trunk.
+#
+# Numret normaliseras till E.164 innan overlamning: Telefonlank tolkar 0701-23 45 67
+# som ett svenskt nummer, men Teams och WhatsApp vill ha +46701234567.
+
+function Format-PhoneNumber([string]$raw, [string]$landsnummer = '+46') {
+    if (-not $raw) { return $null }
+    $s = ($raw -replace '[\s\-\(\)\.\/]', '').Trim()
+    if (-not $s) { return $null }
+    if ($s -match '^00\d') { $s = '+' + $s.Substring(2) }     # 0046... -> +46...
+    if ($s -match '^0\d')  { $s = $landsnummer + $s.Substring(1) }  # 070... -> +4670...
+    if ($s -notmatch '^\+') { $s = $landsnummer + $s }
+    # E.164 tillater 1-15 siffror efter plus. Kortare an 7 ar aldrig ett riktigt
+    # nummer har och ar oftast en halvskriven inmatning - vagra hellre an ring fel.
+    if ($s -notmatch '^\+\d{7,15}$') { return $null }
+    return $s
+}
+
+# Vilka appar finns att lamna over till? Ordningen ar rekommendationsordning.
+# 'system' ligger sist: pa den har maskinen pekar tel: pa lync.exe (Skype for
+# Business) utan att nagon valt det, sa det ar ett samre forstaval an det ser ut.
+function Get-CallApps {
+    $appar = @()
+    if (Get-AppxPackage -Name 'Microsoft.YourPhone' -ErrorAction SilentlyContinue) {
+        $appar += [pscustomobject]@{ Id = 'phonelink'; Namn = (SvText 'Telefonl~enk'); Uri = 'ms-phone:?PhoneNumber={0}' }
+    }
+    if (Get-AppxPackage -Name '*WhatsAppDesktop*' -ErrorAction SilentlyContinue) {
+        $appar += [pscustomobject]@{ Id = 'whatsapp'; Namn = 'WhatsApp'; Uri = 'whatsapp://send?phone={0}' }
+    }
+    if (Get-AppxPackage -Name 'MSTeams' -ErrorAction SilentlyContinue) {
+        $appar += [pscustomobject]@{ Id = 'teams'; Namn = 'Teams'; Uri = 'msteams:/l/call/0/0?users=4:{0}' }
+    }
+    $appar += [pscustomobject]@{ Id = 'system'; Namn = (SvText 'Systemets tel:-hanterare'); Uri = 'tel:{0}' }
+    $appar
+}
+
+function Get-CallApp {
+    $appar = @(Get-CallApps)
+    if (Test-Path $script:taAppCfg) {
+        $sparat = (Get-Content $script:taAppCfg -Raw -ErrorAction SilentlyContinue).Trim()
+        $traff = $appar | Where-Object { $_.Id -eq $sparat } | Select-Object -First 1
+        if ($traff) { return $traff }
+    }
+    $appar | Select-Object -First 1
+}
+
+function Set-CallApp([string]$id) {
+    try { [System.IO.File]::WriteAllText($script:taAppCfg, $id) } catch { }
+}
+
+# Bygger URI:n utan att oppna nagot - sa att testerna kan verifiera overlamningen
+# utan att ett samtal blir av.
+function Get-CallUri([string]$nummer, $app) {
+    $e164 = Format-PhoneNumber $nummer
+    if (-not $e164) { return $null }
+    if (-not $app) { $app = Get-CallApp }
+    if (-not $app) { return $null }
+    # WhatsApp vill ha siffror utan plus i sin egen URI.
+    $arg = if ($app.Id -eq 'whatsapp') { $e164.TrimStart('+') } else { $e164 }
+    return ($app.Uri -f $arg)
+}
+
+# Lamnar over numret. Returnerar det normaliserade numret vid lyckad overlamning,
+# annars $null. Sjalva uppringningen gor du i appen - se kommentaren ovan.
+function Start-PhoneHandover([string]$nummer, $app) {
+    $uri = Get-CallUri $nummer $app
+    if (-not $uri) { return $null }
+    try { Start-Process $uri -ErrorAction Stop }
+    catch {
+        $tray.ShowBalloonTip(5000, 'Telefonassistent',
+            (SvText "Kunde inte ~oppna samtalsappen: $($_.Exception.Message)"), 'Error')
+        return $null
+    }
+    return (Format-PhoneNumber $nummer)
+}
+
 # --- Servern (hjarnan) ----------------------------------------------------------
 
 function Test-TaServer {
@@ -374,22 +457,22 @@ function Start-Telefonassistent([string]$roll = 'svarare', [int]$tystnad = 400) 
     # Mirror of Start-Meeting's guard: meeting recording and the bridge both tap
     # the system loopback, so they must never run at the same time.
     if ($script:meeting -or $script:meetFinishing) {
-        $tray.ShowBalloonTip(5000, 'Telefonassistent', 'Ett mote spelas in - stoppa det forst (Ctrl+Shift+M).', 'Warning')
+        $tray.ShowBalloonTip(5000, 'Telefonassistent', (SvText 'Ett m~ote spelas in - stoppa det f~orst (Ctrl+Shift+M).'), 'Warning')
         return $false
     }
 
     $ut = Get-TaValdUtgang
     if (-not $ut) {
-        $tray.ShowBalloonTip(4000, 'Telefonassistent', 'Hittar ingen ljudutgang.', 'Error'); return $false
+        $tray.ShowBalloonTip(4000, 'Telefonassistent', (SvText 'Hittar ingen ljudutg~ang.'), 'Error'); return $false
     }
     if ($ut.Namn -notmatch 'CABLE') {
         $tray.ShowBalloonTip(5000, 'Telefonassistent',
-            "Utgangen ar '$($ut.Namn)'. Da hors AI:n i hogtalarna i stallet for i samtalet. Valj CABLE Input i menyn.", 'Warning')
+            (SvText "Utg~angen ~er '$($ut.Namn)'. D~a h~ors AI:n i h~ogtalarna i st~ellet f~or i samtalet. V~elj CABLE Input i menyn."), 'Warning')
     }
     if (-not (Start-TaServer)) {
         $var = Get-TaRoot
-        $txt = if ($var) { "Far inte igang servern i $var. Ar node installerat?" }
-               else { 'Hittar inte Telefonsvararen. Valj mappen via menyn (Telefonassistent: serverkatalog).' }
+        $txt = if ($var) { (SvText "F~ar inte ig~ang servern i $var. ~Ar node installerat?") }
+               else { (SvText 'Hittar inte Telefonsvararen. V~elj mappen via menyn (Telefonassistent: serverkatalog).') }
         $tray.ShowBalloonTip(6000, 'Telefonassistent', $txt, 'Error'); return $false
     }
 
@@ -399,14 +482,14 @@ function Start-Telefonassistent([string]$roll = 'svarare', [int]$tystnad = 400) 
         $script:taBridge = $b
         $script:taRoll = $roll
     } catch {
-        $tray.ShowBalloonTip(5000, 'Telefonassistent', "Kunde inte starta ljudet: $($_.Exception.Message)", 'Error')
+        $tray.ShowBalloonTip(5000, 'Telefonassistent', (SvText "Kunde inte starta ljudet: $($_.Exception.Message)"), 'Error')
         return $false
     }
 
     $tray.Icon = $icoMeet
     $tray.Text = 'Diktatorn - telefonassistent aktiv'
     $tray.ShowBalloonTip(3500, 'Telefonassistent',
-        "Lyssnar pa systemljudet, talar till $($ut.Namn). Kalibrerar bakgrundsljud en halv sekund.", 'Info')
+        (SvText "Lyssnar p~a systemljudet, talar till $($ut.Namn). Kalibrerar bakgrundsljud en halv sekund."), 'Info')
     $true
 }
 

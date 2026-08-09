@@ -47,10 +47,12 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   stays clean; the analysis runs on a verbatim pass under the hood.
 - **Dashboard window** (double-click the tray icon, or *Öppna Diktatorn...*): a tabbed window that
   complements the tray + hotkeys. **Möte** — live meeting view (elapsed, talk-share bar, mic/system VU
-  meters with OK/silent tags, crocodile warning, script progress, growing transcript). **Inställningar** —
-  all settings in one panel. **Historik** — past meetings, open transcripts, and **re-transcribe from
-  kept audio** in a chosen language (the recovery path made a feature). **Talanalys** — trend table plus a
-  talk-share chart (bars over the 70% crocodile line turn red).
+  meters with OK/silent tags, crocodile warning, script progress, growing transcript; an idle panel takes
+  its place between meetings, since dead meters read as a bug). **Telefon** — dial field that normalises
+  any Swedish format to E.164 and hands the number to the call app of your choice, plus start/stop for the
+  phone assistant. **Inställningar** — all settings in one panel. **Historik** — past meetings, open
+  transcripts, and **re-transcribe from kept audio** in a chosen language (the recovery path made a
+  feature). **Talanalys** — trend table plus a talk-share chart (bars over the 70% crocodile line turn red).
 - **Voice journal** (`Ctrl+Shift+N`): speak a note and it's appended — with a timestamp heading — to
   `Documents\Journal\YYYY-MM-DD.md` instead of being typed at the cursor. Near-silent takes are
   rejected (measured RMS gate) so a mis-press never writes a Whisper-hallucinated entry into your journal.
@@ -210,6 +212,18 @@ Tray → **Starta telefonassistent**. Then:
 
 Stopping the assistant fetches a summary of the call and shows it as a balloon.
 
+### Dialling from the window
+
+The dashboard's **Telefon** tab has a number field and a **Ring** button. It normalises whatever you type
+(`070-123 45 67`, `+46 70 123 45 67`, `0046701234567`) to E.164 and hands it to the call app you picked —
+Phone Link, WhatsApp, Teams, or whatever owns `tel:`. Only installed apps are offered. A preview line shows
+the exact number and target before you commit, and **Ring** stays disabled until the number parses.
+
+**It does not place the call.** The bridge is deliberately app-agnostic and no call app exposes an API for
+dialling on someone's behalf, so the handover is the honest ceiling: you press call in the app. The audio
+path is unchanged. Dialling from inside the app for real needs a SIP trunk and a number of your own — which
+would also delete the cable and the loopback entirely.
+
 ### Why loopback and a cable, and not something cleaner
 
 Phone Link never exposes call audio as an audio device. Windows lists the paired phone's
@@ -250,7 +264,8 @@ there's nothing to build.
 `tests/` holds the regression suite. Each `Test-*.ps1` extracts the app's **real functions** from
 the source files (brace-counted, via `tests/_TestLib.ps1`) rather than testing hand-copied
 duplicates that drift — the same harness pattern that caught the script-manager scope bug, the
-language-popup closure bug, and the mistranslation default. Run it from the repo folder (the
+language-popup closure bug, the mistranslation default, an `Sv` helper shadowed by the `Set-Variable`
+alias, and tab layouts anchored against a phantom 200×100 page. Run it from the repo folder (the
 runner itself resolves its tests via `$PSScriptRoot`, so only the path to it matters):
 
 ```powershell
@@ -261,7 +276,9 @@ powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
 Each test runs in its own Windows PowerShell 5.1 STA process (the app's runtime). Exit codes:
 0 = pass, 2 = skipped, other = fail. `Test-SilenceGate` needs `lib\NAudio.dll` (skips on a fresh
 clone until `Install-Diktatorn.ps1` has run); `Test-CoachEngine` calls the real Groq API and only
-runs with `-Network`. The suite takes ~8 s.
+runs with `-Network`. `Test-PhoneDial` verifies the whole dial chain without ever placing a call —
+building the handover URI is a separate function from opening it, precisely so it can be asserted.
+The suite takes ~10 s.
 
 ## Credits & license
 

@@ -4,6 +4,7 @@
 . (Join-Path $PSScriptRoot '_TestLib.ps1')
 Add-Type -AssemblyName System.Windows.Forms
 
+Import-AppUi
 Import-AppFunction 'Diktatorn.ps1' @('Start-Meeting')
 Import-AppFunction 'Telefonassistent.ps1' @('Start-Telefonassistent')
 

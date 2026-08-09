@@ -6,6 +6,7 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+Import-AppUi
 Import-AppFunction 'Diktatorn.ps1' @('Open-Dashboard')
 # Lifecycle only - stub the tab content builders.
 function Build-LiveTab($t) {}
@@ -15,13 +16,15 @@ function Build-HistoryTab($t) {}
 function Refresh-HistoryList {}
 function Build-TrendTab($t) {}
 function Refresh-TrendView {}
+function Build-PhoneTab($t) {}
+function Update-PhoneTab {}
 $icoIdle = [System.Drawing.SystemIcons]::Application
 
 Open-Dashboard
 [System.Windows.Forms.Application]::DoEvents()
 $tabs = @($script:dashForm.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] })[0]
 Check 'fonstret oppnas synligt'   $script:dashForm.Visible
-Check 'fyra flikar'               ($tabs.TabPages.Count -eq 4) "fick $($tabs.TabPages.Count)"
+Check 'fem flikar'                ($tabs.TabPages.Count -eq 5) "fick $($tabs.TabPages.Count)"
 Check 'live-timern gar'           $script:dashTimer.Enabled
 
 Open-Dashboard

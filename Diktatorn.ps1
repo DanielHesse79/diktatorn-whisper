@@ -93,6 +93,41 @@ function Write-Log([string]$msg) {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# --- Swedish characters in user-facing text ---
+# The .ps1 files are kept ASCII-only on purpose: PS 5.1 reads non-ASCII source
+# unreliably depending on the file's encoding and the console code page, which
+# has already produced mojibake once. That constraint must NOT leak into the UI,
+# so build Swedish letters from code points instead of typing them literally.
+#   ~a = a-ring   ~e = a-umlaut   ~o = o-umlaut   (uppercase ~A ~E ~O)
+# Mnemonic: the umlauts historically come from ae / oe.
+# Tokens are tilde-prefixed, NOT braces: {o}-style placeholders collide with .NET
+# composite formatting, so a string using both -f and a placeholder threw at
+# runtime and silently killed the rest of the function (hit live in Update-LiveTab -
+# talk share, crocodile warning and script status all vanished). Both forms are
+# safe now: (SvText 'M~ote') and (SvText ('Du {0:N1} min' -f $x)).
+# The name is SvText, not Sv: 'sv' is a built-in alias for Set-Variable, and
+# aliases outrank functions in command resolution - so every (Sv 'text') quietly
+# ran Set-Variable and returned nothing, blanking the whole UI. Same trap waits
+# for any short name; check with Get-Alias before shortening this one.
+function SvText([string]$s) {
+    $s.Replace('~a',  [string][char]0xE5).Replace('~e', [string][char]0xE4).Replace('~o',  [string][char]0xF6).
+       Replace('~A',  [string][char]0xC5).Replace('~E', [string][char]0xC4).Replace('~O',  [string][char]0xD6)
+}
+
+# --- Shared UI look: one palette + font scale for every window ---
+$script:uiInk     = [System.Drawing.Color]::FromArgb(32, 38, 46)      # primary text
+$script:uiMuted   = [System.Drawing.Color]::FromArgb(112, 122, 134)   # secondary text
+$script:uiAccent  = [System.Drawing.Color]::FromArgb(58, 110, 200)    # you / active
+$script:uiAccent2 = [System.Drawing.Color]::FromArgb(150, 158, 168)   # others / passive
+$script:uiOk      = [System.Drawing.Color]::FromArgb(46, 140, 80)
+$script:uiWarn    = [System.Drawing.Color]::FromArgb(200, 70, 70)
+$script:uiBg      = [System.Drawing.Color]::FromArgb(247, 248, 250)   # window background
+$script:uiCard    = [System.Drawing.Color]::White
+$script:uiLine    = [System.Drawing.Color]::FromArgb(224, 228, 234)
+function UiFont([single]$size, [string]$style = 'Regular') {
+    New-Object System.Drawing.Font('Segoe UI', $size, [System.Drawing.FontStyle]::$style)
+}
+
 # --- Native: message-only hotkey window + key polling + unicode typing ---
 $cs = @"
 using System;
@@ -423,7 +458,7 @@ Import-Module $modulePsd 3>$null
 # GPU choice matters enormously: on a laptop/desktop with both an integrated and a
 # discrete GPU, DirectX often lists the integrated one first. Taking [0] blindly
 # measured 0.3x realtime on an integrated Radeon versus 10.9x on the discrete
-# RTX beside it — a 34x difference, and the reason local mode felt unusable.
+# RTX beside it - a 34x difference, and the reason local mode felt unusable.
 # Prefer a discrete card; let diktatorn-gpu.txt override.
 $gpuCfg = Join-Path $root 'diktatorn-gpu.txt'
 $script:adapters = @(Get-Adapters | Where-Object { $_ -notlike '*Basic Render*' })
@@ -525,7 +560,7 @@ function Resolve-Backend {
 $script:backend = Resolve-Backend
 function Set-Backend([string]$b) {
     if ($b -eq 'groq' -and -not (Get-GroqKey)) {
-        $tray.ShowBalloonTip(4000, 'Diktatorn', 'Ingen Groq-nyckel. Hogerklicka -> Ange Groq API-nyckel.', 'Warning')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText 'Ingen Groq-nyckel. H~ogerklicka -> Ange Groq API-nyckel.'), 'Warning')
     }
     $script:backend = $b
     try { [System.IO.File]::WriteAllText($backendCfg, $b) } catch {}
@@ -543,7 +578,7 @@ function Resolve-Talanalys {
 $script:talanalys = Resolve-Talanalys
 function Set-Talanalys([string]$t) {
     if ($t -eq 'coach' -and -not (Get-CoachKey $script:coach)) {
-        $tray.ShowBalloonTip(4000, 'Diktatorn', "AI-coachen behover en API-nyckel for vald motor ($($script:coach)).", 'Warning')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText "AI-coachen beh~over en API-nyckel f~or vald motor ($($script:coach))."), 'Warning')
     }
     $script:talanalys = $t
     try { [System.IO.File]::WriteAllText($talanalysCfg, $t) } catch {}
@@ -572,10 +607,10 @@ function Get-CoachKey([string]$provider) {
 }
 function Set-Coach([string]$c) {
     if ($c -eq 'openrouter' -and -not (Get-CoachKey 'openrouter')) {
-        $tray.ShowBalloonTip(4000, 'Diktatorn', 'OpenRouter behover en API-nyckel. Hogerklicka -> Ange OpenRouter API-nyckel.', 'Warning')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText 'OpenRouter beh~over en API-nyckel. H~ogerklicka -> Ange OpenRouter API-nyckel.'), 'Warning')
     }
     if ($c -eq 'ollama') {
-        $tray.ShowBalloonTip(4000, 'Diktatorn', 'Kraver att Ollama kor lokalt (ollama.com). Modell valjs i diktatorn-coach-model.txt.', 'Info')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText 'Kr~ever att Ollama k~or lokalt (ollama.com). Modell v~eljs i diktatorn-coach-model.txt.'), 'Info')
     }
     $script:coach = $c
     try { [System.IO.File]::WriteAllText($coachCfg, $c) } catch {}
@@ -638,7 +673,7 @@ function Set-KeepAudio([bool]$on) {
     $script:keepAudio = $on
     try { [System.IO.File]::WriteAllText($keepAudioCfg, $(if ($on) { 'on' } else { 'off' })) } catch {}
     if ($script:keepAudioMenuItem) { $script:keepAudioMenuItem.Checked = $on }
-    if ($on) { $tray.ShowBalloonTip(5000, 'Diktatorn', "Motesljud sparas nu i $keepAudioDays dagar i mappen Motesljud (Transcriptions).", 'Info') }
+    if ($on) { $tray.ShowBalloonTip(5000, 'Diktatorn', (SvText "M~otesljud sparas nu i $keepAudioDays dagar i mappen M~otesljud (Transcriptions)."), 'Info') }
 }
 # Copy a meeting's chunk audio into the dated archive before the temp dir is cleaned.
 function Save-MeetingAudio {
@@ -668,13 +703,13 @@ function Clear-OldMeetingAudio {
 # nested message loop, and closures over function locals go null there.
 function Show-MeetLangPrompt {
     $script:mlForm = New-Object System.Windows.Forms.Form
-    $script:mlForm.Text = 'Motessprak'
+    $script:mlForm.Text = (SvText 'M~otesspr~ak')
     $script:mlForm.FormBorderStyle = 'FixedDialog'
     $script:mlForm.StartPosition = 'CenterScreen'
     $script:mlForm.MinimizeBox = $false; $script:mlForm.MaximizeBox = $false; $script:mlForm.TopMost = $true
     $script:mlForm.ClientSize = New-Object System.Drawing.Size(320, 130)
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = 'Vilket sprak talas pa motet?'
+    $lbl.Text = (SvText 'Vilket spr~ak talas p~a m~otet?')
     $lbl.AutoSize = $true; $lbl.Location = New-Object System.Drawing.Point(16, 18)
     $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $script:mlForm.Controls.Add($lbl)
@@ -723,20 +758,20 @@ $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon = $icoIdle; $tray.Text = 'Diktatorn - redo'; $tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$miInfo = $menu.Items.Add('Ctrl+Shift = diktera  |  +D toggel  |  +N journal  |  +M mote'); $miInfo.Enabled = $false
+$miInfo = $menu.Items.Add((SvText 'Ctrl+Shift = diktera  |  +D v~exla  |  +N journal  |  +M m~ote')); $miInfo.Enabled = $false
 $miStats = $menu.Items.Add('Talhastighet: - '); $miStats.Enabled = $false
 [void]$menu.Items.Add('-')
-$miMeeting = $menu.Items.Add('Starta motesinspelning (Ctrl+Shift+M)')
+$miMeeting = $menu.Items.Add((SvText 'Starta m~otesinspelning (Ctrl+Shift+M)'))
 $miOpenLive = $menu.Items.Add('Visa transkript (live)')
 $miOpenLive.Enabled = $false
 $miOpenLive.add_Click({ if ($script:meetOutFile -and (Test-Path $script:meetOutFile)) { Invoke-Item $script:meetOutFile } })
-$miJournal = $menu.Items.Add('Oppna dagens journal')
+$miJournal = $menu.Items.Add((SvText '~Oppna dagens journal'))
 $miJournal.add_Click({
     $f = Join-Path $journalDir ((Get-Date -Format 'yyyy-MM-dd') + '.md')
     if (Test-Path $f) { Invoke-Item $f }
-    else { $tray.ShowBalloonTip(2500, 'Diktatorn', 'Ingen journal idag an. Tryck Ctrl+Shift+N och prata.', 'Info') }
+    else { $tray.ShowBalloonTip(2500, 'Diktatorn', (SvText 'Ingen journal idag ~en. Tryck Ctrl+Shift+N och prata.'), 'Info') }
 })
-$miScript = $menu.Items.Add('Salj-script...')
+$miScript = $menu.Items.Add((SvText 'S~elj-script...'))
 $miScript.add_Click({ Open-ScriptPicker })
 
 # --- Telefonassistent i menyn ---
@@ -840,13 +875,13 @@ if ($script:adapters.Count -gt 1) {
             try {
                 Reload-Model $script:modelFile
                 if (Test-DiscreteAdapter $chosen) {
-                    $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info')
+                    $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText "Anv~ender nu: $chosen"), 'Info')
                 } else {
-                    $tray.ShowBalloonTip(7000, 'Diktatorn', "Anvander nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket langsam.", 'Warning')
+                    $tray.ShowBalloonTip(7000, 'Diktatorn', (SvText "Anv~ender nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket l~angsam."), 'Warning')
                 }
             } catch {
                 Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
-                $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte anvanda $chosen", 'Error')
+                $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText "Kunde inte anv~enda $chosen"), 'Error')
             }
             Set-Status 'redo' $icoIdle
         })
@@ -896,7 +931,7 @@ foreach ($c in @(
     $script:coachMenuItems += $item
 }
 [void]$menu.Items.Add($miCoach)
-$miMode = New-Object System.Windows.Forms.ToolStripMenuItem 'Motestranskribering'
+$miMode = New-Object System.Windows.Forms.ToolStripMenuItem (SvText 'M~otestranskribering')
 $script:meetModeMenuItems = @()
 foreach ($m in @(
     @{t='live';     l='Live (vaxande transkript)'},
@@ -910,7 +945,7 @@ foreach ($m in @(
     $script:meetModeMenuItems += $item
 }
 [void]$menu.Items.Add($miMode)
-$miMeetLang = New-Object System.Windows.Forms.ToolStripMenuItem 'Motessprak'
+$miMeetLang = New-Object System.Windows.Forms.ToolStripMenuItem (SvText 'M~otesspr~ak')
 $script:meetLangMenuItems = @()
 foreach ($l in @(
     @{t='sv';   l='Svenska'},
@@ -924,7 +959,7 @@ foreach ($l in @(
     $script:meetLangMenuItems += $item
 }
 [void]$menu.Items.Add($miMeetLang)
-$script:keepAudioMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem "Spara motesljud ($keepAudioDays dagar)"
+$script:keepAudioMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem (SvText "Spara m~otesljud ($keepAudioDays dagar)")
 $script:keepAudioMenuItem.CheckOnClick = $true
 $script:keepAudioMenuItem.Checked = $script:keepAudio
 $script:keepAudioMenuItem.add_Click({ Set-KeepAudio $this.Checked })
@@ -946,7 +981,7 @@ $miORKey.add_Click({
 [void]$menu.Items.Add('-')
 $miQuit = $menu.Items.Add('Avsluta')
 # Dashboard entry at the very top of the menu, plus double-click on the tray icon.
-$miDash = New-Object System.Windows.Forms.ToolStripMenuItem 'Oppna Diktatorn...'
+$miDash = New-Object System.Windows.Forms.ToolStripMenuItem (SvText '~Oppna Diktatorn...')
 $miDash.Font = New-Object System.Drawing.Font($miDash.Font, [System.Drawing.FontStyle]::Bold)
 $miDash.add_Click({ Open-Dashboard })
 $menu.Items.Insert(0, $miDash)
@@ -972,11 +1007,11 @@ function Set-Gpu([string]$chosen) {
     Set-Status 'byter grafikkort...' $icoWork
     try {
         Reload-Model $script:modelFile
-        if (Test-DiscreteAdapter $chosen) { $tray.ShowBalloonTip(3000, 'Diktatorn', "Anvander nu: $chosen", 'Info') }
-        else { $tray.ShowBalloonTip(7000, 'Diktatorn', "Anvander nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket langsam.", 'Warning') }
+        if (Test-DiscreteAdapter $chosen) { $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText "Anv~ender nu: $chosen"), 'Info') }
+        else { $tray.ShowBalloonTip(7000, 'Diktatorn', (SvText "Anv~ender nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket l~angsam."), 'Warning') }
     } catch {
         Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
-        $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte anvanda $chosen", 'Error')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText "Kunde inte anv~enda $chosen"), 'Error')
     }
     Set-Status 'redo' $icoIdle
 }
@@ -991,26 +1026,42 @@ function Open-Dashboard {
     }
     $f = New-Object System.Windows.Forms.Form
     $f.Text = 'Diktatorn'
-    $f.Size = New-Object System.Drawing.Size(760, 620)
-    $f.MinimumSize = New-Object System.Drawing.Size(620, 480)
+    $f.Size = New-Object System.Drawing.Size(860, 660)
+    $f.MinimumSize = New-Object System.Drawing.Size(700, 520)
     $f.StartPosition = 'CenterScreen'
+    $f.BackColor = $script:uiBg
+    $f.Font = UiFont 9.75
     try { $f.Icon = $icoIdle } catch {}
     $script:dashForm = $f
 
     $tabs = New-Object System.Windows.Forms.TabControl
-    $tabs.Dock = 'Fill'; $tabs.Padding = New-Object System.Drawing.Point(12, 6)
+    $tabs.Dock = 'Fill'; $tabs.Padding = New-Object System.Drawing.Point(16, 8)
+    $tabs.Font = UiFont 10
     $f.Controls.Add($tabs)
 
-    $script:dashTabLive     = New-Object System.Windows.Forms.TabPage 'Mote'
-    $script:dashTabSettings = New-Object System.Windows.Forms.TabPage 'Installningar'
+    $script:dashTabLive     = New-Object System.Windows.Forms.TabPage (SvText 'M~ote')
+    $script:dashTabSettings = New-Object System.Windows.Forms.TabPage (SvText 'Inst~ellningar')
+    $script:dashTabPhone    = New-Object System.Windows.Forms.TabPage 'Telefon'
     $script:dashTabHistory  = New-Object System.Windows.Forms.TabPage 'Historik'
     $script:dashTabTrend    = New-Object System.Windows.Forms.TabPage 'Talanalys'
-    foreach ($t in @($script:dashTabLive, $script:dashTabSettings, $script:dashTabHistory, $script:dashTabTrend)) {
-        $t.BackColor = [System.Drawing.SystemColors]::Control
+    $pages = @($script:dashTabLive, $script:dashTabPhone, $script:dashTabSettings, $script:dashTabHistory, $script:dashTabTrend)
+    foreach ($t in $pages) {
+        $t.BackColor = $script:uiBg
+        $t.Padding = New-Object System.Windows.Forms.Padding(4)
         [void]$tabs.TabPages.Add($t)
     }
 
+    # A TabPage keeps its phantom 200x100 default size until the TabControl has a
+    # window handle AND the page has been selected once. Anchoring children against
+    # that baseline makes every control over-grow the moment the page snaps to full
+    # size: cards came out 1404 px wide inside an 836 px tab, and the history buttons
+    # and the whole trend chart were pushed hundreds of pixels below the window.
+    # Create the handle, then give every page its real bounds BEFORE building it.
+    $f.CreateControl()
+    foreach ($t in $pages) { $t.Bounds = $tabs.DisplayRectangle }
+
     Build-LiveTab     $script:dashTabLive
+    Build-PhoneTab    $script:dashTabPhone
     Build-SettingsTab $script:dashTabSettings
     Build-HistoryTab  $script:dashTabHistory
     Build-TrendTab    $script:dashTabTrend
@@ -1018,7 +1069,7 @@ function Open-Dashboard {
     # Refresh the live tab while the window is open (cheap; only the live tab redraws).
     $script:dashTimer = New-Object System.Windows.Forms.Timer
     $script:dashTimer.Interval = 1000
-    $script:dashTimer.add_Tick({ try { Update-LiveTab } catch {} })
+    $script:dashTimer.add_Tick({ try { Update-LiveTab } catch {}; try { Update-PhoneTab } catch {} })
     $f.add_Shown({ $script:dashTimer.Start() })
     $f.add_FormClosing({
         try { $script:dashTimer.Stop() } catch {}
@@ -1031,114 +1082,238 @@ function Open-Dashboard {
     Refresh-TrendView
 }
 
-# Placeholder builders — filled in by later stages. Each just needs to exist so
-# the scaffold compiles and opens; real content is added tab by tab.
-function Build-LiveTab($tab) {
-    $font = New-Object System.Drawing.Font('Segoe UI', 10)
-    $y = 14
-    $script:dashLiveStatus = New-Object System.Windows.Forms.Label
-    $script:dashLiveStatus.Location = New-Object System.Drawing.Point(14, $y); $script:dashLiveStatus.AutoSize = $true
-    $script:dashLiveStatus.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
-    $tab.Controls.Add($script:dashLiveStatus); $y += 40
-
-    # Talk-share bar (you vs others), widths set live
-    $lblTalk = New-Object System.Windows.Forms.Label
-    $lblTalk.Text = 'Talandel'; $lblTalk.Location = New-Object System.Drawing.Point(14, $y); $lblTalk.AutoSize = $true; $lblTalk.Font = $font
-    $tab.Controls.Add($lblTalk); $y += 22
-    $talkHost = New-Object System.Windows.Forms.Panel
-    $talkHost.Location = New-Object System.Drawing.Point(14, $y); $talkHost.Size = New-Object System.Drawing.Size(680, 26)
-    $talkHost.BorderStyle = 'FixedSingle'
-    $script:dashTalkYou = New-Object System.Windows.Forms.Panel
-    $script:dashTalkYou.BackColor = [System.Drawing.Color]::FromArgb(70,120,210); $script:dashTalkYou.Dock = 'Left'; $script:dashTalkYou.Width = 0
-    $script:dashTalkOthers = New-Object System.Windows.Forms.Panel
-    $script:dashTalkOthers.BackColor = [System.Drawing.Color]::FromArgb(150,150,150); $script:dashTalkOthers.Dock = 'Fill'
-    $talkHost.Controls.Add($script:dashTalkOthers); $talkHost.Controls.Add($script:dashTalkYou)
-    $tab.Controls.Add($talkHost); $y += 30
-    $script:dashTalkLabel = New-Object System.Windows.Forms.Label
-    $script:dashTalkLabel.Location = New-Object System.Drawing.Point(14, $y); $script:dashTalkLabel.AutoSize = $true; $script:dashTalkLabel.Font = $font
-    $tab.Controls.Add($script:dashTalkLabel); $y += 34
-
-    # Live level meters + health
-    function Add-Meter($caption, $yy) {
-        $l = New-Object System.Windows.Forms.Label
-        $l.Text = $caption; $l.Location = New-Object System.Drawing.Point(14, $yy); $l.Size = New-Object System.Drawing.Size(150, 22); $l.Font = $font
-        $pb = New-Object System.Windows.Forms.ProgressBar
-        $pb.Location = New-Object System.Drawing.Point(170, $yy); $pb.Size = New-Object System.Drawing.Size(430, 20); $pb.Minimum = 0; $pb.Maximum = 100
-        $tag = New-Object System.Windows.Forms.Label
-        $tag.Location = New-Object System.Drawing.Point(610, $yy); $tag.Size = New-Object System.Drawing.Size(90, 22); $tag.Font = $font
-        $tab.Controls.Add($l); $tab.Controls.Add($pb); $tab.Controls.Add($tag)
-        return @{ bar = $pb; tag = $tag }
+function New-UiCard($parent, [int]$x, [int]$y, [int]$w, [int]$h, [string]$title) {
+    # A card = white panel + optional small-caps heading. Panels are cheap and give
+    # the flat WinForms surface the grouping it otherwise lacks.
+    $card = New-Object System.Windows.Forms.Panel
+    $card.Location = New-Object System.Drawing.Point($x, $y)
+    $card.Size = New-Object System.Drawing.Size($w, $h)
+    $card.BackColor = $script:uiCard
+    $card.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
+    $card.add_Paint({
+        param($s, $e)
+        $pen = New-Object System.Drawing.Pen $script:uiLine
+        $e.Graphics.DrawRectangle($pen, 0, 0, ($s.Width - 1), ($s.Height - 1))
+        $pen.Dispose()
+    })
+    if ($title) {
+        $h1 = New-Object System.Windows.Forms.Label
+        $h1.Text = $title.ToUpper(); $h1.Location = New-Object System.Drawing.Point(16, 12)
+        $h1.AutoSize = $true; $h1.Font = UiFont 8 'Bold'; $h1.ForeColor = $script:uiMuted
+        # Labels treat '&' as a mnemonic prefix and swallow it - "TALANDEL & LJUD"
+        # rendered as "TALANDEL LJUD" with a stray underline.
+        $h1.UseMnemonic = $false
+        $card.Controls.Add($h1)
     }
-    $mMic = Add-Meter 'Din mikrofon' $y; $y += 26
-    $mSys = Add-Meter 'Datorljud (ovriga)' $y; $y += 34
-    $script:dashMicBar = $mMic.bar; $script:dashMicTag = $mMic.tag
-    $script:dashSysBar = $mSys.bar; $script:dashSysTag = $mSys.tag
+    $parent.Controls.Add($card)
+    return $card
+}
+
+function Build-LiveTab($tab) {
+    $pad = 16
+    # Lay out against the page's real size. The floors keep the harnesses (which
+    # build into a bare TabPage) producing the same layout as the live window.
+    $w = [math]::Max(720, $tab.ClientSize.Width)
+    $tabH = [math]::Max(540, $tab.ClientSize.Height)
+    $cardW = $w - 2 * $pad
+
+    # --- Header card: status dot + headline + elapsed --------------------------
+    $head = New-UiCard $tab $pad $pad $cardW 88 $null
+    $head.Anchor = 'Top,Left,Right'
+    $script:dashDot = New-Object System.Windows.Forms.Panel
+    $script:dashDot.Location = New-Object System.Drawing.Point(18, 32); $script:dashDot.Size = New-Object System.Drawing.Size(14, 14)
+    $script:dashDot.add_Paint({
+        param($s, $e)
+        $e.Graphics.SmoothingMode = 'AntiAlias'
+        $b = New-Object System.Drawing.SolidBrush $s.BackColor
+        $e.Graphics.FillEllipse($b, 0, 0, 13, 13); $b.Dispose()
+    })
+    $script:dashDot.BackColor = $script:uiMuted
+    $head.Controls.Add($script:dashDot)
+    $script:dashLiveStatus = New-Object System.Windows.Forms.Label
+    # An AutoSize 15 pt label is 33 px tall, so the hint has to clear y=18+33 - at
+    # y=48 the status label (added first, therefore painted on top) sliced the top
+    # off "Motet spelas in".
+    $script:dashLiveStatus.Location = New-Object System.Drawing.Point(42, 18); $script:dashLiveStatus.AutoSize = $true
+    $script:dashLiveStatus.Font = UiFont 15 'Regular'; $script:dashLiveStatus.ForeColor = $script:uiInk
+    $head.Controls.Add($script:dashLiveStatus)
+    $script:dashLiveHint = New-Object System.Windows.Forms.Label
+    $script:dashLiveHint.Location = New-Object System.Drawing.Point(44, 55); $script:dashLiveHint.AutoSize = $true
+    $script:dashLiveHint.Font = UiFont 9; $script:dashLiveHint.ForeColor = $script:uiMuted
+    $head.Controls.Add($script:dashLiveHint)
+
+    # --- Live card: everything that only means something during a meeting ------
+    $script:dashLiveCard = New-UiCard $tab $pad 116 $cardW 190 (SvText 'Talandel & ljud')
+    $script:dashLiveCard.Anchor = 'Top,Left,Right'
+
+    # Talk share: one owner-drawn bar (rounded, labelled) instead of nested panels.
+    $script:dashTalkBar = New-Object System.Windows.Forms.Panel
+    $script:dashTalkBar.Location = New-Object System.Drawing.Point(16, 40)
+    $script:dashTalkBar.Size = New-Object System.Drawing.Size(($cardW - 32), 30)
+    $script:dashTalkBar.Anchor = 'Top,Left,Right'
+    $script:dashTalkBar.add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $wd = $s.ClientSize.Width; $ht = $s.ClientSize.Height
+        $tot = [double]$script:meetSecsYou + [double]$script:meetSecsOthers
+        $bgB = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(238, 240, 244))
+        $g.FillRectangle($bgB, 0, 0, $wd, $ht); $bgB.Dispose()
+        if ($tot -gt 0) {
+            $youW = [int]($wd * ([double]$script:meetSecsYou / $tot))
+            $b1 = New-Object System.Drawing.SolidBrush $script:uiAccent
+            $b2 = New-Object System.Drawing.SolidBrush $script:uiAccent2
+            $g.FillRectangle($b1, 0, 0, $youW, $ht)
+            $g.FillRectangle($b2, $youW, 0, ($wd - $youW), $ht)
+            $pct = [int][math]::Round(100 * [double]$script:meetSecsYou / $tot)
+            $fnt = UiFont 8.5 'Bold'
+            $wht = [System.Drawing.Brushes]::White
+            if ($youW -gt 46)        { $g.DrawString("DU $pct%", $fnt, $wht, 8, ($ht/2 - 8)) }
+            if (($wd - $youW) -gt 74) { $g.DrawString((SvText "~OVRIGA $((100-$pct))%"), $fnt, $wht, ($youW + 8), ($ht/2 - 8)) }
+            $fnt.Dispose()
+            $b1.Dispose(); $b2.Dispose()
+        }
+        $pen = New-Object System.Drawing.Pen $script:uiLine
+        $g.DrawRectangle($pen, 0, 0, ($wd - 1), ($ht - 1)); $pen.Dispose()
+    })
+    $script:dashLiveCard.Controls.Add($script:dashTalkBar)
+    $script:dashTalkLabel = New-Object System.Windows.Forms.Label
+    $script:dashTalkLabel.Location = New-Object System.Drawing.Point(16, 74); $script:dashTalkLabel.AutoSize = $true
+    $script:dashTalkLabel.Font = UiFont 9; $script:dashTalkLabel.ForeColor = $script:uiMuted
+    $script:dashLiveCard.Controls.Add($script:dashTalkLabel)
+
+    # Level meters: owner-drawn segments, so they read as VU rather than as a
+    # Windows progress bar (which implies "task completion", not "loudness").
+    function New-Meter($parent, [string]$caption, [int]$yy) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $caption; $l.Location = New-Object System.Drawing.Point(16, ($yy + 3))
+        $l.Size = New-Object System.Drawing.Size(150, 20); $l.Font = UiFont 9; $l.ForeColor = $script:uiInk
+        $m = New-Object System.Windows.Forms.Panel
+        $m.Location = New-Object System.Drawing.Point(170, $yy)
+        $m.Size = New-Object System.Drawing.Size(($cardW - 170 - 16 - 78), 18)
+        $m.Anchor = 'Top,Left,Right'
+        $m.Tag = 0.0
+        $m.add_Paint({
+            param($s, $e)
+            $g = $e.Graphics
+            $lvl = [double]$s.Tag
+            $segs = 28; $sw = [int]($s.ClientSize.Width / $segs)
+            $lit = [int][math]::Round($segs * [math]::Min(1.0, $lvl * 3.0))
+            for ($i = 0; $i -lt $segs; $i++) {
+                $col = if ($i -lt $lit) {
+                    if ($i -gt $segs * 0.85) { $script:uiWarn } elseif ($i -gt $segs * 0.6) { [System.Drawing.Color]::FromArgb(220, 170, 60) } else { $script:uiAccent }
+                } else { [System.Drawing.Color]::FromArgb(234, 237, 241) }
+                $b = New-Object System.Drawing.SolidBrush $col
+                $g.FillRectangle($b, ($i * $sw), 0, ($sw - 2), $s.ClientSize.Height)
+                $b.Dispose()
+            }
+        })
+        $t = New-Object System.Windows.Forms.Label
+        $t.Location = New-Object System.Drawing.Point(($cardW - 16 - 70), ($yy + 2)); $t.Size = New-Object System.Drawing.Size(70, 20)
+        $t.Font = UiFont 8.5 'Bold'; $t.Anchor = 'Top,Right'
+        $parent.Controls.Add($l); $parent.Controls.Add($m); $parent.Controls.Add($t)
+        return @{ meter = $m; tag = $t }
+    }
+    $mMic = New-Meter $script:dashLiveCard 'Din mikrofon' 108
+    $mSys = New-Meter $script:dashLiveCard (SvText 'Datorljud (~ovriga)') 134
+    $script:dashMicMeter = $mMic.meter; $script:dashMicTag = $mMic.tag
+    $script:dashSysMeter = $mSys.meter; $script:dashSysTag = $mSys.tag
 
     $script:dashCroc = New-Object System.Windows.Forms.Label
-    $script:dashCroc.Location = New-Object System.Drawing.Point(14, $y); $script:dashCroc.AutoSize = $true
-    $script:dashCroc.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $tab.Controls.Add($script:dashCroc); $y += 26
+    $script:dashCroc.Location = New-Object System.Drawing.Point(16, 160); $script:dashCroc.AutoSize = $true
+    $script:dashCroc.Font = UiFont 9.5 'Bold'; $script:dashCroc.ForeColor = $script:uiWarn
+    $script:dashLiveCard.Controls.Add($script:dashCroc)
     $script:dashScriptLbl = New-Object System.Windows.Forms.Label
-    $script:dashScriptLbl.Location = New-Object System.Drawing.Point(14, $y); $script:dashScriptLbl.AutoSize = $true; $script:dashScriptLbl.Font = $font
-    $tab.Controls.Add($script:dashScriptLbl); $y += 30
+    $script:dashScriptLbl.Location = New-Object System.Drawing.Point(($cardW - 16 - 240), 160)
+    $script:dashScriptLbl.Size = New-Object System.Drawing.Size(240, 21)
+    $script:dashScriptLbl.TextAlign = 'MiddleRight'; $script:dashScriptLbl.Anchor = 'Top,Right'
+    $script:dashScriptLbl.Font = UiFont 9; $script:dashScriptLbl.ForeColor = $script:uiMuted
+    $script:dashLiveCard.Controls.Add($script:dashScriptLbl)
 
-    $lblTr = New-Object System.Windows.Forms.Label
-    $lblTr.Text = 'Transkript (live)'; $lblTr.Location = New-Object System.Drawing.Point(14, $y); $lblTr.AutoSize = $true; $lblTr.Font = $font
-    $tab.Controls.Add($lblTr); $y += 22
+    # --- Transcript card -------------------------------------------------------
+    $trTop = 116 + 190 + 10
+    $script:dashTrCard = New-UiCard $tab $pad $trTop $cardW ($tabH - $trTop - $pad) 'Transkript'
+    $script:dashTrCard.Anchor = 'Top,Left,Right,Bottom'
     $script:dashTranscript = New-Object System.Windows.Forms.TextBox
     $script:dashTranscript.Multiline = $true; $script:dashTranscript.ReadOnly = $true; $script:dashTranscript.ScrollBars = 'Vertical'
-    $script:dashTranscript.Location = New-Object System.Drawing.Point(14, $y)
-    $script:dashTranscript.Size = New-Object System.Drawing.Size(686, 140)
+    $script:dashTranscript.BorderStyle = 'None'; $script:dashTranscript.BackColor = $script:uiCard
+    $script:dashTranscript.ForeColor = $script:uiInk
+    $script:dashTranscript.Location = New-Object System.Drawing.Point(16, 36)
+    $script:dashTranscript.Size = New-Object System.Drawing.Size(($cardW - 32), ($script:dashTrCard.Height - 52))
     $script:dashTranscript.Anchor = 'Top,Left,Right,Bottom'
-    $script:dashTranscript.Font = New-Object System.Drawing.Font('Consolas', 9)
-    $tab.Controls.Add($script:dashTranscript)
+    $script:dashTranscript.Font = New-Object System.Drawing.Font('Consolas', 9.5)
+    $script:dashTrCard.Controls.Add($script:dashTranscript)
+
+    # --- Idle panel: shown INSTEAD of the live/transcript cards when no meeting.
+    # A dead 0% bar and empty meters look like a rendering bug; say what to do.
+    $script:dashIdle = New-UiCard $tab $pad 116 $cardW ($tabH - 116 - $pad) $null
+    $script:dashIdle.Anchor = 'Top,Left,Right,Bottom'
+    $il = New-Object System.Windows.Forms.Label
+    $il.Text = (SvText 'Ingen inspelning p~ag~ar')
+    $il.Location = New-Object System.Drawing.Point(24, 30); $il.AutoSize = $true
+    $il.Font = UiFont 13; $il.ForeColor = $script:uiInk
+    $script:dashIdle.Controls.Add($il)
+    $ih = New-Object System.Windows.Forms.Label
+    $ih.Text = (SvText "Starta ett m~ote med Ctrl+Shift+M. D~a visas talandel, ljudniv~aer och`ntranskriptet h~er i realtid.`n`nCtrl+Shift h~eller du inne f~or att diktera. Ctrl+Shift+N ger en journalanteckning.")
+    $ih.Location = New-Object System.Drawing.Point(26, 64); $ih.AutoSize = $true
+    $ih.Font = UiFont 9.5; $ih.ForeColor = $script:uiMuted
+    $script:dashIdle.Controls.Add($ih)
+
     Update-LiveTab
 }
 
 function Update-LiveTab {
     if (-not $script:dashLiveStatus) { return }
-    if ($script:meeting) {
-        $mins = [int](((Get-Date) - $script:meetStart).TotalMinutes)
-        $secs = [int](((Get-Date) - $script:meetStart).TotalSeconds) % 60
-        $script:dashLiveStatus.Text = ('MOTE PAGAR - {0:00}:{1:00}' -f $mins, $secs)
-        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::FromArgb(70,120,210)
-    } elseif ($script:meetFinishing) {
-        $script:dashLiveStatus.Text = 'Transkriberar motet...'
-        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::FromArgb(230,180,40)
-    } else {
-        $script:dashLiveStatus.Text = 'Inget mote pagar - tryck Ctrl+Shift+M'
-        $script:dashLiveStatus.ForeColor = [System.Drawing.Color]::Gray
+    $live = [bool]($script:meeting -or $script:meetFinishing)
+
+    # Swap between the idle panel and the live cards (rather than showing empty ones)
+    if ($script:dashIdle.Visible -eq $live) {
+        $script:dashIdle.Visible = -not $live
+        $script:dashLiveCard.Visible = $live
+        $script:dashTrCard.Visible = $live
     }
+
+    if ($script:meeting) {
+        $el = (Get-Date) - $script:meetStart
+        $script:dashLiveStatus.Text = ('{0:00}:{1:00}' -f [int]$el.TotalMinutes, ($el.Seconds))
+        $script:dashLiveStatus.ForeColor = $script:uiInk
+        $script:dashLiveHint.Text = (SvText 'M~otet spelas in - Ctrl+Shift+M avslutar')
+        $script:dashDot.BackColor = $script:uiAccent
+    } elseif ($script:meetFinishing) {
+        $script:dashLiveStatus.Text = 'Transkriberar...'
+        $script:dashLiveStatus.ForeColor = $script:uiInk
+        $script:dashLiveHint.Text = (SvText 'M~otet bearbetas, ett ~ogonblick')
+        $script:dashDot.BackColor = [System.Drawing.Color]::FromArgb(230, 180, 40)
+    } else {
+        $script:dashLiveStatus.Text = 'Diktatorn'
+        $script:dashLiveStatus.ForeColor = $script:uiInk
+        $script:dashLiveHint.Text = 'Redo'
+        $script:dashDot.BackColor = $script:uiOk
+    }
+    $script:dashDot.Invalidate()
+    if (-not $live) { return }   # nothing below is meaningful without a meeting
 
     $you = [double]$script:meetSecsYou; $oth = [double]$script:meetSecsOthers; $tot = $you + $oth
+    $script:dashTalkBar.Invalidate()
     if ($tot -gt 0) {
-        $pctYou = [int][math]::Round(100 * $you / $tot)
-        $script:dashTalkYou.Width = [int][math]::Round(($script:dashTalkYou.Parent.ClientSize.Width) * $you / $tot)
-        $script:dashTalkLabel.Text = "Du $pctYou%  |  Ovriga $((100-$pctYou))%   ($([math]::Round($you/60,1)) / $([math]::Round($oth/60,1)) min)"
+        $script:dashTalkLabel.Text = (SvText ('Du {0:N1} min  |  ~Ovriga {1:N1} min' -f ($you / 60), ($oth / 60)))
     } else {
-        $script:dashTalkYou.Width = 0
-        $script:dashTalkLabel.Text = 'Du 0%  |  Ovriga 0%'
+        $script:dashTalkLabel.Text = (SvText 'V~entar p~a tal...')
     }
 
-    # Live meters (instantaneous peak, scaled so speech ~0.1 reads mid-bar)
     $rec = $script:meetRec
     $micL = 0.0; $sysL = 0.0; $micOk = $false; $sysOk = $false
     if ($script:meeting -and $rec) {
         try { $micL = [double]$rec.MicLevel; $sysL = [double]$rec.SysLevel } catch {}
         try { $micOk = ($rec.MicCaptured -and $rec.MicPeak -ge 0.01); $sysOk = ($rec.SysSeconds -ge 2) } catch {}
     }
-    $script:dashMicBar.Value = [math]::Max(0, [math]::Min(100, [int]($micL * 300)))
-    $script:dashSysBar.Value = [math]::Max(0, [math]::Min(100, [int]($sysL * 300)))
-    if (-not $script:meeting) { $script:dashMicTag.Text = ''; $script:dashSysTag.Text = '' }
-    else {
-        $script:dashMicTag.Text = $(if ($micOk) { 'OK' } else { 'TYST?' })
-        $script:dashMicTag.ForeColor = $(if ($micOk) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::FromArgb(200,60,60) })
-        $script:dashSysTag.Text = $(if ($sysOk) { 'OK' } else { 'TYST?' })
-        $script:dashSysTag.ForeColor = $(if ($sysOk) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::FromArgb(200,60,60) })
-    }
+    $script:dashMicMeter.Tag = $micL; $script:dashMicMeter.Invalidate()
+    $script:dashSysMeter.Tag = $sysL; $script:dashSysMeter.Invalidate()
+    $script:dashMicTag.Text = $(if ($micOk) { 'OK' } else { 'TYST?' })
+    $script:dashMicTag.ForeColor = $(if ($micOk) { $script:uiOk } else { $script:uiWarn })
+    $script:dashSysTag.Text = $(if ($sysOk) { 'OK' } else { 'TYST?' })
+    $script:dashSysTag.ForeColor = $(if ($sysOk) { $script:uiOk } else { $script:uiWarn })
 
-    # Crocodile: rolling-window talk share (reuse the meeting's own chunk lists)
-    $croc = ''
+    $script:dashCroc.Text = ''
     if ($script:meeting -and $script:chunkListYou -and $script:chunkListYou.Count -ge 1) {
         $win = [math]::Max(1, [math]::Ceiling($crocWinSec / $chunkSec))
         $n = $script:chunkListYou.Count; $a = [math]::Max(0, $n - $win)
@@ -1146,18 +1321,15 @@ function Update-LiveTab {
         for ($k = $a; $k -lt $n; $k++) { $wy += $script:chunkListYou[$k]; $wo += $script:chunkListOthers[$k] }
         $wt = $wy + $wo
         if ($wt -gt 0 -and (100 * $wy / $wt) -ge $crocPct) {
-            $script:dashCroc.Text = 'Krokodilvarning: du pratar mer an du lyssnar - stor mun, sma oron'
-            $script:dashCroc.ForeColor = [System.Drawing.Color]::FromArgb(200,60,60)
-        } else { $script:dashCroc.Text = '' }
-    } else { $script:dashCroc.Text = '' }
+            $script:dashCroc.Text = (SvText 'Krokodilvarning - stor mun, sm~a ~oron. Lyssna mer.')
+        }
+    }
 
-    # Script checklist progress (if the checklist window is open)
     if ($script:scriptChecks -and @($script:scriptChecks).Count -gt 0) {
         $done = @($script:scriptChecks | Where-Object { $_.Checked }).Count
-        $script:dashScriptLbl.Text = "Saljscript: $done / $(@($script:scriptChecks).Count) avklarat"
+        $script:dashScriptLbl.Text = (SvText "S~eljscript: $done / $(@($script:scriptChecks).Count) avklarat")
     } else { $script:dashScriptLbl.Text = '' }
 
-    # Transcript preview: last ~25 lines
     if ($script:meetLines -and $script:meetLines.Count -gt 0) {
         $tail = @($script:meetLines | Select-Object -Last 25) -join "`r`n"
         if ($script:dashTranscript.Text -ne $tail) {
@@ -1180,12 +1352,12 @@ function Build-SettingsTab($tab) {
     # AFTER preselecting, so loading the current value doesn't fire a redundant Set-*.
     function Add-Row($label, $items, $tags, $current, $onPick) {
         $lbl = New-Object System.Windows.Forms.Label
-        $lbl.Text = $label; $lbl.AutoSize = $false; $lbl.Width = 200; $lbl.Height = 28
-        $lbl.TextAlign = 'MiddleLeft'; $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+        $lbl.Text = (SvText $label); $lbl.AutoSize = $false; $lbl.Width = 210; $lbl.Height = 30
+        $lbl.TextAlign = 'MiddleLeft'; $lbl.Font = UiFont 10; $lbl.ForeColor = $script:uiInk
         $cb = New-Object System.Windows.Forms.ComboBox
-        $cb.DropDownStyle = 'DropDownList'; $cb.Width = 460
-        $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-        foreach ($it in $items) { [void]$cb.Items.Add($it) }
+        $cb.DropDownStyle = 'DropDownList'; $cb.Width = 470
+        $cb.Font = UiFont 10; $cb.FlatStyle = 'Flat'; $cb.Margin = '3,4,3,4'
+        foreach ($it in $items) { [void]$cb.Items.Add((SvText ([string]$it))) }
         $cb.Tag = @{ tags = $tags; onPick = $onPick }
         $ix = [array]::IndexOf($tags, $current); if ($ix -lt 0) { $ix = 0 }
         if ($cb.Items.Count -gt 0) { $cb.SelectedIndex = $ix }
@@ -1197,6 +1369,19 @@ function Build-SettingsTab($tab) {
         return $cb
     }
 
+    # Section heading spanning both columns - nine identical rows in a row read as
+    # one undifferentiated wall; the headings give the eye somewhere to rest.
+    function Add-Head($text, [int]$topGap) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = (SvText $text).ToUpper()
+        $l.AutoSize = $false; $l.Height = (20 + $topGap); $l.Width = 400
+        $l.TextAlign = 'BottomLeft'; $l.Font = UiFont 8 'Bold'; $l.ForeColor = $script:uiMuted
+        $l.UseMnemonic = $false; $l.Margin = '3,0,3,2'
+        $panel.Controls.Add($l)
+        $panel.SetColumnSpan($l, 2)
+    }
+
+    Add-Head 'Ljud & modell' 0
     # Microphone
     $micNames = @($script:micNames); $micIdx = @(0..([math]::Max(0,$micNames.Count-1)))
     [void](Add-Row 'Mikrofon' $micNames $micIdx $script:micDevice { param($v) Set-MicDevice ([int]$v) })
@@ -1209,10 +1394,13 @@ function Build-SettingsTab($tab) {
     if ($script:adapters.Count -gt 1) {
         [void](Add-Row 'Grafikkort' @($script:adapters) @($script:adapters) $script:adapter { param($v) Set-Gpu ([string]$v) })
     }
+    Add-Head 'M~ote' 14
     # Meeting mode
-    [void](Add-Row 'Motestranskribering' @('Live (vaxande)','Efter motet') @('live','deferred') $script:meetMode { param($v) Set-MeetMode ([string]$v) })
+    [void](Add-Row 'M~otestranskribering' @('Live (v~exande)','Efter m~otet') @('live','deferred') $script:meetMode { param($v) Set-MeetMode ([string]$v) })
     # Meeting language
-    [void](Add-Row 'Motessprak' @('Svenska','Engelska') @('sv','en') $script:meetLang { param($v) Set-MeetLang ([string]$v) })
+    [void](Add-Row 'M~otesspr~ak' @('Svenska','Engelska') @('sv','en') $script:meetLang { param($v) Set-MeetLang ([string]$v) })
+
+    Add-Head 'Analys & data' 14
     # Coach engine
     [void](Add-Row 'Coach-motor' @('Groq (gratis moln)','Ollama (lokal)','OpenRouter') @('groq','ollama','openrouter') $script:coach { param($v) Set-Coach ([string]$v) })
     # Talanalys
@@ -1220,22 +1408,25 @@ function Build-SettingsTab($tab) {
 
     # Keep audio checkbox
     $lblKA = New-Object System.Windows.Forms.Label
-    $lblKA.Text = "Spara motesljud ($keepAudioDays dgr)"; $lblKA.Width = 200; $lblKA.Height = 28; $lblKA.TextAlign = 'MiddleLeft'
-    $lblKA.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $lblKA.Text = (SvText "Spara m~otesljud"); $lblKA.Width = 210; $lblKA.Height = 30; $lblKA.TextAlign = 'MiddleLeft'
+    $lblKA.Font = UiFont 10; $lblKA.ForeColor = $script:uiInk
     $chkKA = New-Object System.Windows.Forms.CheckBox
-    $chkKA.Text = 'Behall raljud for aterskapning'; $chkKA.AutoSize = $true; $chkKA.Checked = $script:keepAudio
-    $chkKA.Font = New-Object System.Drawing.Font('Segoe UI', 10); $chkKA.Margin = '3,6,3,3'
+    $chkKA.Text = (SvText "Beh~all r~aljud i $keepAudioDays dagar (f~or ~aterskapning)")
+    $chkKA.AutoSize = $true; $chkKA.Checked = $script:keepAudio
+    $chkKA.Font = UiFont 10; $chkKA.Margin = '3,8,3,3'; $chkKA.ForeColor = $script:uiInk
     $chkKA.add_CheckedChanged({ Set-KeepAudio $this.Checked })
     $panel.Controls.Add($lblKA); $panel.Controls.Add($chkKA)
 
     # API key buttons
     $lblKeys = New-Object System.Windows.Forms.Label
-    $lblKeys.Text = 'API-nycklar'; $lblKeys.Width = 200; $lblKeys.Height = 34; $lblKeys.TextAlign = 'MiddleLeft'
-    $lblKeys.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $lblKeys.Text = 'API-nycklar'; $lblKeys.Width = 210; $lblKeys.Height = 36; $lblKeys.TextAlign = 'MiddleLeft'
+    $lblKeys.Font = UiFont 10; $lblKeys.ForeColor = $script:uiInk
     $keyPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $keyPanel.AutoSize = $true; $keyPanel.WrapContents = $false
     $bGroq = New-Object System.Windows.Forms.Button
     $bGroq.Text = 'Groq-nyckel...'; $bGroq.Width = 130; $bGroq.Height = 30
+    $bGroq.FlatStyle = 'Flat'; $bGroq.BackColor = $script:uiCard; $bGroq.Font = UiFont 9.5
+    $bGroq.FlatAppearance.BorderColor = $script:uiLine
     $bGroq.add_Click({
         Add-Type -AssemblyName Microsoft.VisualBasic
         $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din Groq API-nyckel (gsk_...):', 'Groq API-nyckel', (Get-GroqKey))
@@ -1243,6 +1434,8 @@ function Build-SettingsTab($tab) {
     })
     $bOR = New-Object System.Windows.Forms.Button
     $bOR.Text = 'OpenRouter-nyckel...'; $bOR.Width = 160; $bOR.Height = 30
+    $bOR.FlatStyle = 'Flat'; $bOR.BackColor = $script:uiCard; $bOR.Font = UiFont 9.5
+    $bOR.FlatAppearance.BorderColor = $script:uiLine
     $bOR.add_Click({
         Add-Type -AssemblyName Microsoft.VisualBasic
         $val = [Microsoft.VisualBasic.Interaction]::InputBox('Klistra in din OpenRouter API-nyckel (sk-or-...):', 'OpenRouter API-nyckel', (Get-CoachKey 'openrouter'))
@@ -1251,6 +1444,207 @@ function Build-SettingsTab($tab) {
     [void]$keyPanel.Controls.Add($bGroq); [void]$keyPanel.Controls.Add($bOR)
     $panel.Controls.Add($lblKeys); $panel.Controls.Add($keyPanel)
 }
+function Build-PhoneTab($tab) {
+    $pad = 16
+    $w = [math]::Max(720, $tab.ClientSize.Width)
+    $cardW = $w - 2 * $pad
+
+    if (-not $script:taTillganglig) {
+        $c = New-UiCard $tab $pad $pad $cardW 150 (SvText 'Telefon')
+        $c.Anchor = 'Top,Left,Right'
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = (SvText "Telefondelen ~er inte laddad.`n`nDen kr~ever Telefonassistent.ps1 bredvid Diktatorn.ps1, NAudio och`nVB-CABLE. Utan den fungerar resten av appen som vanligt.")
+        $l.Location = New-Object System.Drawing.Point(16, 44); $l.AutoSize = $true
+        $l.Font = UiFont 9.5; $l.ForeColor = $script:uiMuted
+        $c.Controls.Add($l)
+        return
+    }
+
+    # --- Ring upp --------------------------------------------------------------
+    $dial = New-UiCard $tab $pad $pad $cardW 176 (SvText 'Ring upp')
+    $dial.Anchor = 'Top,Left,Right'
+
+    $script:dashDialBox = New-Object System.Windows.Forms.TextBox
+    $script:dashDialBox.Location = New-Object System.Drawing.Point(16, 44)
+    $script:dashDialBox.Size = New-Object System.Drawing.Size(300, 34)
+    $script:dashDialBox.Font = UiFont 14
+    $script:dashDialBox.BorderStyle = 'FixedSingle'
+    # Enter ringer - att tvinga fram musen for varje samtal ar hela grejen vi ville bort fran.
+    $script:dashDialBox.add_KeyDown({
+        param($s, $e)
+        if ($e.KeyCode -eq 'Return') { $e.SuppressKeyPress = $true; Invoke-Dial }
+    })
+    $script:dashDialBox.add_TextChanged({ Update-DialPreview })
+    $dial.Controls.Add($script:dashDialBox)
+
+    $script:dashDialBtn = New-Object System.Windows.Forms.Button
+    $script:dashDialBtn.Text = 'Ring'
+    $script:dashDialBtn.Location = New-Object System.Drawing.Point(328, 44)
+    $script:dashDialBtn.Size = New-Object System.Drawing.Size(96, 34)
+    $script:dashDialBtn.Font = UiFont 10 'Bold'
+    $script:dashDialBtn.FlatStyle = 'Flat'
+    $script:dashDialBtn.BackColor = $script:uiAccent
+    $script:dashDialBtn.ForeColor = [System.Drawing.Color]::White
+    $script:dashDialBtn.FlatAppearance.BorderColor = $script:uiAccent
+    $script:dashDialBtn.add_Click({ Invoke-Dial })
+    $dial.Controls.Add($script:dashDialBtn)
+
+    $lblApp = New-Object System.Windows.Forms.Label
+    $lblApp.Text = (SvText 'L~emna ~over till'); $lblApp.Location = New-Object System.Drawing.Point(($cardW - 16 - 230 - 106), 51)
+    $lblApp.AutoSize = $true; $lblApp.Font = UiFont 9.5; $lblApp.ForeColor = $script:uiInk
+    $lblApp.Anchor = 'Top,Right'
+    $dial.Controls.Add($lblApp)
+
+    $script:dashDialApp = New-Object System.Windows.Forms.ComboBox
+    $script:dashDialApp.DropDownStyle = 'DropDownList'
+    $script:dashDialApp.Location = New-Object System.Drawing.Point(($cardW - 16 - 230), 47)
+    $script:dashDialApp.Size = New-Object System.Drawing.Size(230, 28)
+    $script:dashDialApp.Anchor = 'Top,Right'
+    $script:dashDialApp.Font = UiFont 9.5; $script:dashDialApp.FlatStyle = 'Flat'
+    $script:dashCallApps = @(Get-CallApps)
+    foreach ($a in $script:dashCallApps) { [void]$script:dashDialApp.Items.Add($a.Namn) }
+    $cur = Get-CallApp
+    $ix = 0
+    for ($i = 0; $i -lt $script:dashCallApps.Count; $i++) { if ($cur -and $script:dashCallApps[$i].Id -eq $cur.Id) { $ix = $i } }
+    if ($script:dashDialApp.Items.Count -gt 0) { $script:dashDialApp.SelectedIndex = $ix }
+    # Wire AFTER preselecting, same as the settings dropdowns - loading a value
+    # must not count as the user picking one.
+    $script:dashDialApp.add_SelectedIndexChanged({
+        Set-CallApp $script:dashCallApps[$this.SelectedIndex].Id
+        Update-DialPreview
+    })
+    $dial.Controls.Add($script:dashDialApp)
+
+    $script:dashDialHint = New-Object System.Windows.Forms.Label
+    $script:dashDialHint.Location = New-Object System.Drawing.Point(16, 92)
+    $script:dashDialHint.Size = New-Object System.Drawing.Size(($cardW - 32), 40)
+    $script:dashDialHint.Anchor = 'Top,Left,Right'
+    $script:dashDialHint.Font = UiFont 9; $script:dashDialHint.ForeColor = $script:uiMuted
+    $dial.Controls.Add($script:dashDialHint)
+
+    $script:dashDialNote = New-Object System.Windows.Forms.Label
+    # Sag rakt ut vad knappen gor. Den kopplar inte upp nagot samtal sjalv, och en
+    # knapp som heter Ring men lamnar over ar bara arlig om den sager det.
+    $script:dashDialNote.Text = (SvText 'Numret l~emnas ~over till samtalsappen - sj~elva uppringningen g~or du d~er. Ljudet g~ar som vanligt via kabeln.')
+    $script:dashDialNote.Location = New-Object System.Drawing.Point(16, 136)
+    $script:dashDialNote.Size = New-Object System.Drawing.Size(($cardW - 32), 22)
+    $script:dashDialNote.Anchor = 'Top,Left,Right'
+    $script:dashDialNote.Font = UiFont 8.5; $script:dashDialNote.ForeColor = $script:uiAccent2
+    $dial.Controls.Add($script:dashDialNote)
+
+    # --- AI-assistenten --------------------------------------------------------
+    $ai = New-UiCard $tab $pad 208 $cardW 150 (SvText 'AI-assistent i samtalet')
+    $ai.Anchor = 'Top,Left,Right'
+
+    $script:dashPhoneDot = New-Object System.Windows.Forms.Panel
+    $script:dashPhoneDot.Location = New-Object System.Drawing.Point(18, 48)
+    $script:dashPhoneDot.Size = New-Object System.Drawing.Size(14, 14)
+    $script:dashPhoneDot.BackColor = $script:uiMuted
+    $script:dashPhoneDot.add_Paint({
+        param($s, $e)
+        $e.Graphics.SmoothingMode = 'AntiAlias'
+        $b = New-Object System.Drawing.SolidBrush $s.BackColor
+        $e.Graphics.FillEllipse($b, 0, 0, 13, 13); $b.Dispose()
+    })
+    $ai.Controls.Add($script:dashPhoneDot)
+
+    $script:dashPhoneStatus = New-Object System.Windows.Forms.Label
+    $script:dashPhoneStatus.Location = New-Object System.Drawing.Point(42, 44)
+    $script:dashPhoneStatus.AutoSize = $true
+    $script:dashPhoneStatus.Font = UiFont 11; $script:dashPhoneStatus.ForeColor = $script:uiInk
+    $ai.Controls.Add($script:dashPhoneStatus)
+
+    $script:dashPhoneHint = New-Object System.Windows.Forms.Label
+    $script:dashPhoneHint.Location = New-Object System.Drawing.Point(44, 70)
+    $script:dashPhoneHint.Size = New-Object System.Drawing.Size(($cardW - 60), 22)
+    $script:dashPhoneHint.Anchor = 'Top,Left,Right'
+    $script:dashPhoneHint.Font = UiFont 9; $script:dashPhoneHint.ForeColor = $script:uiMuted
+    $ai.Controls.Add($script:dashPhoneHint)
+
+    $script:dashPhoneBtn = New-Object System.Windows.Forms.Button
+    $script:dashPhoneBtn.Location = New-Object System.Drawing.Point(16, 104)
+    $script:dashPhoneBtn.Size = New-Object System.Drawing.Size(150, 32)
+    $script:dashPhoneBtn.Font = UiFont 9.5; $script:dashPhoneBtn.FlatStyle = 'Flat'
+    $script:dashPhoneBtn.BackColor = $script:uiCard
+    $script:dashPhoneBtn.FlatAppearance.BorderColor = $script:uiLine
+    $script:dashPhoneBtn.add_Click({
+        if ($script:taBridge) { Stop-Telefonassistent } else { [void](Start-Telefonassistent $script:taRoll 400) }
+        Update-PhoneTab
+    })
+    $ai.Controls.Add($script:dashPhoneBtn)
+
+    $btnTon = New-Object System.Windows.Forms.Button
+    $btnTon.Text = (SvText 'Testa kabeln')
+    $btnTon.Location = New-Object System.Drawing.Point(174, 104)
+    $btnTon.Size = New-Object System.Drawing.Size(130, 32)
+    $btnTon.Font = UiFont 9.5; $btnTon.FlatStyle = 'Flat'
+    $btnTon.BackColor = $script:uiCard
+    $btnTon.FlatAppearance.BorderColor = $script:uiLine
+    $btnTon.add_Click({ try { $script:taBridge.Testton() } catch {} })
+    $ai.Controls.Add($btnTon)
+
+    Update-DialPreview
+    Update-PhoneTab
+}
+
+# Live preview of what the Ring button will actually hand over. Catching a
+# half-typed number here beats discovering it in the call app.
+function Update-DialPreview {
+    if (-not $script:dashDialHint) { return }
+    $raw = $script:dashDialBox.Text
+    $app = $null
+    if ($script:dashCallApps -and $script:dashDialApp.SelectedIndex -ge 0) {
+        $app = $script:dashCallApps[$script:dashDialApp.SelectedIndex]
+    }
+    if (-not $raw.Trim()) {
+        $script:dashDialHint.Text = (SvText 'Skriv ett nummer - 070-123 45 67 eller +46701234567. Enter ringer.')
+        $script:dashDialHint.ForeColor = $script:uiMuted
+        $script:dashDialBtn.Enabled = $false
+        return
+    }
+    $e164 = Format-PhoneNumber $raw
+    if ($e164) {
+        $script:dashDialHint.Text = (SvText ("Ringer {0} via {1}" -f $e164, $(if ($app) { $app.Namn } else { '?' })))
+        $script:dashDialHint.ForeColor = $script:uiOk
+        $script:dashDialBtn.Enabled = $true
+    } else {
+        $script:dashDialHint.Text = (SvText 'Inget giltigt nummer ~en.')
+        $script:dashDialHint.ForeColor = $script:uiWarn
+        $script:dashDialBtn.Enabled = $false
+    }
+}
+
+function Invoke-Dial {
+    if (-not $script:dashDialBox) { return }
+    $app = $null
+    if ($script:dashCallApps -and $script:dashDialApp.SelectedIndex -ge 0) {
+        $app = $script:dashCallApps[$script:dashDialApp.SelectedIndex]
+    }
+    $nr = Start-PhoneHandover $script:dashDialBox.Text $app
+    if ($nr) {
+        $script:dashDialHint.Text = (SvText ("{0} ~overl~emnat till {1} - tryck Ring d~er." -f $nr, $(if ($app) { $app.Namn } else { '?' })))
+        $script:dashDialHint.ForeColor = $script:uiInk
+    }
+}
+
+function Update-PhoneTab {
+    if (-not $script:dashPhoneStatus) { return }
+    if ($script:taBridge) {
+        $script:dashPhoneDot.BackColor = $script:uiAccent
+        $script:dashPhoneStatus.Text = (SvText 'Aktiv - AI:n svarar i samtalet')
+        $turer = try { [int]$script:taBridge.TurerKorda } catch { 0 }
+        $script:dashPhoneHint.Text = (SvText ("Roll: {0}.  {1} turer k~orda." -f $script:taRoll, $turer))
+        $script:dashPhoneBtn.Text = (SvText 'Stoppa assistenten')
+    } else {
+        $script:dashPhoneDot.BackColor = $script:uiOk
+        $script:dashPhoneStatus.Text = 'Av'
+        $ut = try { (Get-TaValdUtgang).Namn } catch { $null }
+        $script:dashPhoneHint.Text = $(if ($ut) { (SvText ("Utg~ang: {0}" -f $ut)) } else { (SvText 'Ingen ljudutg~ang vald.') })
+        $script:dashPhoneBtn.Text = (SvText 'Starta assistenten')
+    }
+    $script:dashPhoneDot.Invalidate()
+}
+
 # Re-transcribe a saved meeting's archived chunk audio in the chosen language.
 # Turns the manual recovery script into a feature; hardened against the broken
 # header of whichever chunk was recording when a meeting ended abruptly.
@@ -1300,38 +1694,44 @@ function Rebuild-Transcript($audioDir, $lang, $outFile, $statusLabel) {
 }
 
 function Build-HistoryTab($tab) {
+    $w = [math]::Max(720, $tab.ClientSize.Width)
+    $h = [math]::Max(540, $tab.ClientSize.Height)
+    $barTop = $h - 12 - 40
     $lv = New-Object System.Windows.Forms.ListView
     $lv.Location = New-Object System.Drawing.Point(12, 12)
-    $lv.Size = New-Object System.Drawing.Size(710, 440)
+    $lv.Size = New-Object System.Drawing.Size(($w - 24), ($barTop - 24))
     $lv.Anchor = 'Top,Left,Right,Bottom'
     $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.MultiSelect = $false
-    $lv.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    [void]$lv.Columns.Add('Mote', 300); [void]$lv.Columns.Add('Datum', 150); [void]$lv.Columns.Add('Ljud sparat', 220)
+    $lv.Font = UiFont 9.5; $lv.BorderStyle = 'FixedSingle'; $lv.BackColor = $script:uiCard
+    $lv.ForeColor = $script:uiInk; $lv.GridLines = $false; $lv.HeaderStyle = 'Nonclickable'
+    [void]$lv.Columns.Add((SvText 'M~ote'), 320); [void]$lv.Columns.Add('Datum', 160); [void]$lv.Columns.Add('Ljud sparat', 200)
     $tab.Controls.Add($lv)
     $script:dashHistList = $lv
 
     $bar = New-Object System.Windows.Forms.FlowLayoutPanel
-    $bar.Location = New-Object System.Drawing.Point(12, 458); $bar.Size = New-Object System.Drawing.Size(710, 40)
+    $bar.Location = New-Object System.Drawing.Point(12, $barTop); $bar.Size = New-Object System.Drawing.Size(($w - 24), 40)
     $bar.Anchor = 'Left,Right,Bottom'
     $tab.Controls.Add($bar)
     function HistBtn($text, $w, $handler) {
-        $b = New-Object System.Windows.Forms.Button; $b.Text = $text; $b.Width = $w; $b.Height = 30
-        $b.Font = New-Object System.Drawing.Font('Segoe UI', 9); $b.add_Click($handler); [void]$bar.Controls.Add($b); return $b
+        $b = New-Object System.Windows.Forms.Button; $b.Text = (SvText $text); $b.Width = $w; $b.Height = 32
+        $b.Font = UiFont 9.5; $b.FlatStyle = 'Flat'; $b.BackColor = $script:uiCard
+        $b.FlatAppearance.BorderColor = $script:uiLine
+        $b.add_Click($handler); [void]$bar.Controls.Add($b); return $b
     }
-    [void](HistBtn 'Uppdatera' 90 { Refresh-HistoryList })
-    [void](HistBtn 'Oppna transkript' 130 {
+    [void](HistBtn 'Uppdatera' 95 { Refresh-HistoryList })
+    [void](HistBtn '~Oppna transkript' 140 {
         $it = @($script:dashHistList.SelectedItems)[0]
         if ($it -and $it.Tag.txt -and (Test-Path $it.Tag.txt)) { Invoke-Item $it.Tag.txt }
     })
-    [void](HistBtn 'Oppna ljudmapp' 120 {
+    [void](HistBtn '~Oppna ljudmapp' 130 {
         $it = @($script:dashHistList.SelectedItems)[0]
         if ($it -and $it.Tag.audio -and (Test-Path $it.Tag.audio)) { Invoke-Item $it.Tag.audio }
-        else { [void][System.Windows.Forms.MessageBox]::Show('Inget sparat ljud for det har motet.', 'Diktatorn') }
+        else { [void][System.Windows.Forms.MessageBox]::Show((SvText 'Inget sparat ljud f~or det h~er m~otet.'), 'Diktatorn') }
     })
-    [void](HistBtn 'Aterskapa transkript...' 170 {
+    [void](HistBtn '~Aterskapa transkript...' 180 {
         $it = @($script:dashHistList.SelectedItems)[0]
         if (-not $it -or -not $it.Tag.audio -or -not (Test-Path $it.Tag.audio)) {
-            [void][System.Windows.Forms.MessageBox]::Show('Det har motet har inget sparat ljud att aterskapa fran. Sla pa "Spara motesljud" for framtida moten.', 'Diktatorn'); return
+            [void][System.Windows.Forms.MessageBox]::Show((SvText 'Det h~er m~otet har inget sparat ljud att ~aterskapa fr~an. Sl~a p~a "Spara m~otesljud" f~or framtida m~oten.'), 'Diktatorn'); return
         }
         $lang = Show-MeetLangPrompt
         if (-not $lang) { return }
@@ -1344,12 +1744,13 @@ function Build-HistoryTab($tab) {
             Invoke-Item $out
         } catch {
             Write-Log "Aterskapa: $($_.Exception.Message)"
-            [void][System.Windows.Forms.MessageBox]::Show("Kunde inte aterskapa: $($_.Exception.Message)", 'Diktatorn')
+            [void][System.Windows.Forms.MessageBox]::Show((SvText "Kunde inte ~aterskapa: $($_.Exception.Message)"), 'Diktatorn')
             $script:dashHistStatus.Text = 'Misslyckades.'
         } finally { $script:dashForm.Cursor = [System.Windows.Forms.Cursors]::Default }
     })
     $script:dashHistStatus = New-Object System.Windows.Forms.Label
-    $script:dashHistStatus.AutoSize = $true; $script:dashHistStatus.Margin = '10,8,0,0'; $script:dashHistStatus.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $script:dashHistStatus.AutoSize = $true; $script:dashHistStatus.Margin = '12,9,0,0'
+    $script:dashHistStatus.Font = UiFont 9; $script:dashHistStatus.ForeColor = $script:uiMuted
     [void]$bar.Controls.Add($script:dashHistStatus)
 }
 
@@ -1369,48 +1770,75 @@ function Refresh-HistoryList {
     }
 }
 function Build-TrendTab($tab) {
+    $w = [math]::Max(720, $tab.ClientSize.Width)
+    $h = [math]::Max(540, $tab.ClientSize.Height)
     $lv = New-Object System.Windows.Forms.ListView
-    $lv.Location = New-Object System.Drawing.Point(12, 12); $lv.Size = New-Object System.Drawing.Size(710, 250)
+    $lv.Location = New-Object System.Drawing.Point(12, 12); $lv.Size = New-Object System.Drawing.Size(($w - 24), 250)
     $lv.Anchor = 'Top,Left,Right'; $lv.View = 'Details'; $lv.FullRowSelect = $true
-    $lv.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    [void]$lv.Columns.Add('Datum', 130); [void]$lv.Columns.Add('Langd (min)', 90)
-    [void]$lv.Columns.Add('Talandel %', 90); [void]$lv.Columns.Add('Utfyllnad/min', 100)
-    [void]$lv.Columns.Add('Fragor', 70); [void]$lv.Columns.Add('Langsta monolog', 120)
+    $lv.Font = UiFont 9.5; $lv.BorderStyle = 'FixedSingle'; $lv.BackColor = $script:uiCard
+    $lv.ForeColor = $script:uiInk; $lv.GridLines = $false; $lv.HeaderStyle = 'Nonclickable'
+    [void]$lv.Columns.Add('Datum', 140); [void]$lv.Columns.Add((SvText 'L~engd (min)'), 95)
+    [void]$lv.Columns.Add('Talandel %', 95); [void]$lv.Columns.Add('Utfyllnad/min', 110)
+    [void]$lv.Columns.Add((SvText 'Fr~agor'), 75); [void]$lv.Columns.Add((SvText 'L~engsta monolog'), 130)
     $tab.Controls.Add($lv); $script:dashTrendList = $lv
 
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = 'Talandel per mote (rott = over 70%, krokodilgransen)'; $lbl.Location = New-Object System.Drawing.Point(12, 270)
-    $lbl.AutoSize = $true; $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $lbl.Text = (SvText 'Talandel per m~ote - r~ott ~er ~over 70%, krokodilgr~ensen')
+    $lbl.Location = New-Object System.Drawing.Point(12, 272)
+    $lbl.AutoSize = $true; $lbl.Font = UiFont 9; $lbl.ForeColor = $script:uiMuted
     $tab.Controls.Add($lbl)
 
     $chart = New-Object System.Windows.Forms.Panel
-    $chart.Location = New-Object System.Drawing.Point(12, 294); $chart.Size = New-Object System.Drawing.Size(710, 210)
-    $chart.Anchor = 'Top,Left,Right,Bottom'; $chart.BackColor = [System.Drawing.Color]::White; $chart.BorderStyle = 'FixedSingle'
+    $chart.Location = New-Object System.Drawing.Point(12, 294); $chart.Size = New-Object System.Drawing.Size(($w - 24), ($h - 294 - 12))
+    $chart.Anchor = 'Top,Left,Right,Bottom'; $chart.BackColor = $script:uiCard; $chart.BorderStyle = 'FixedSingle'
     $chart.add_Paint({
         param($s, $e)
         $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
         $w = $s.ClientSize.Width; $h = $s.ClientSize.Height; $pad = 8
         $rows = @($script:trendRows)
         if ($rows.Count -eq 0) {
-            $g.DrawString('Ingen data an - kor ett mote med talanalys pa.', (New-Object System.Drawing.Font('Segoe UI', 10)), [System.Drawing.Brushes]::Gray, 12, ($h/2 - 10)); return
+            $fnt = UiFont 10
+            $br = New-Object System.Drawing.SolidBrush $script:uiMuted
+            $g.DrawString((SvText 'Ingen data ~en - k~or ett m~ote med talanalys p~a.'), $fnt, $br, 14, ($h/2 - 10))
+            $fnt.Dispose(); $br.Dispose(); return
         }
+        # Room at the bottom for date labels, at the top for the value above each bar.
+        $axis = 22; $cap = 16
+        $plotH = $h - $pad - $axis - $cap
+        $base = $h - $pad - $axis
+        $fntS = New-Object System.Drawing.Font('Segoe UI', 7)
+        $brMuted = New-Object System.Drawing.SolidBrush $script:uiMuted
+
         # 70% crocodile reference line
-        $y70 = $h - $pad - (($h - 2*$pad) * 0.70)
-        $penRef = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(200,200,200)); $penRef.DashStyle = 'Dash'
-        $g.DrawLine($penRef, $pad, $y70, ($w - $pad), $y70)
-        $g.DrawString('70%', (New-Object System.Drawing.Font('Segoe UI', 7)), [System.Drawing.Brushes]::Gray, ($w - $pad - 26), ($y70 - 14))
+        $y70 = $base - ($plotH * 0.70)
+        $penRef = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(206, 210, 216)); $penRef.DashStyle = 'Dash'
+        $g.DrawLine($penRef, $pad, $y70, ($w - $pad - 30), $y70)
+        $g.DrawString('70%', $fntS, $brMuted, ($w - $pad - 28), ($y70 - 8))
+        $penBase = New-Object System.Drawing.Pen $script:uiLine
+        $g.DrawLine($penBase, $pad, $base, ($w - $pad), $base)
+
+        # Slim, centred bars - a full-slot block reads as a colour field, not a value.
         $show = @($rows | Select-Object -Last 24)
-        $bw = [math]::Max(6, [int](($w - 2*$pad) / [math]::Max(1, $show.Count)) - 4)
+        $slot = [double]($w - 2 * $pad) / $show.Count
+        $bw = [int][math]::Max(6, [math]::Min(46, $slot - 12))
+        $fmt = New-Object System.Drawing.StringFormat; $fmt.Alignment = 'Center'
         for ($i = 0; $i -lt $show.Count; $i++) {
             $share = [double]$show[$i].share
-            $bh = [int](($h - 2*$pad) * ($share / 100.0))
-            $x = $pad + $i * [int](($w - 2*$pad) / $show.Count)
-            $col = if ($share -ge 70) { [System.Drawing.Color]::FromArgb(200,70,70) } else { [System.Drawing.Color]::FromArgb(70,120,210) }
+            $bh = [int]($plotH * ($share / 100.0))
+            $cx = $pad + ($i + 0.5) * $slot
+            $x = [int]($cx - $bw / 2)
+            $col = if ($share -ge 70) { $script:uiWarn } else { $script:uiAccent }
             $br = New-Object System.Drawing.SolidBrush $col
-            $g.FillRectangle($br, $x, ($h - $pad - $bh), $bw, $bh)
+            $g.FillRectangle($br, $x, ($base - $bh), $bw, $bh)
             $br.Dispose()
+            $g.DrawString([string][int]$share, $fntS, $brMuted, $cx, ($base - $bh - 13), $fmt)
+            # Dates only while they still fit; crowding them is worse than dropping them.
+            if ($slot -ge 46) {
+                $d = ([string]$show[$i].datum) -replace '^\d{4}-', '' -replace ' .*$', ''
+                $g.DrawString($d, $fntS, $brMuted, $cx, ($base + 5), $fmt)
+            }
         }
-        $penRef.Dispose()
+        $fmt.Dispose(); $fntS.Dispose(); $brMuted.Dispose(); $penBase.Dispose(); $penRef.Dispose()
     })
     $tab.Controls.Add($chart); $script:dashTrendChart = $chart
     Refresh-TrendView
@@ -1428,7 +1856,7 @@ function Refresh-TrendView {
             $script:trendRows += [pscustomobject]@{ datum=$c[0]; mins=$c[1]; share=[double]($c[2]); fill=$c[3]; q=$c[4]; monolog=$c[5] }
             $li = New-Object System.Windows.Forms.ListViewItem($c[0])
             foreach ($v in @($c[1], $c[2], $c[3], $c[4], $c[5])) { [void]$li.SubItems.Add([string]$v) }
-            if ([double]$c[2] -ge 70) { $li.ForeColor = [System.Drawing.Color]::FromArgb(200,70,70) }
+            if ([double]$c[2] -ge 70) { $li.ForeColor = $script:uiWarn }
             [void]$script:dashTrendList.Items.Add($li)
         }
     }
@@ -1515,7 +1943,7 @@ function Start-Journal {
     Remove-Item $tmpJournal -ErrorAction SilentlyContinue
     if (-not $script:micRec.Start($tmpJournal, $script:micDevice)) {
         Write-Log 'Start-Journal: mic could not be opened'
-        $tray.ShowBalloonTip(3000, 'Diktatorn', 'Mikrofonen kunde inte oppnas.', 'Warning')
+        $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText 'Mikrofonen kunde inte ~oppnas.'), 'Warning')
         return
     }
     $script:journaling = $true
@@ -1536,7 +1964,7 @@ function Stop-Journal {
         # 0.01 = -40 dB, comfortably between measured room noise (~-49 dB) and speech (~-20 dB)
         if (-not (Test-Path $cleanJ) -or ((Get-Item $cleanJ).Length -lt 16000) -or ($rmsJ -lt 0.01)) {
             Write-Log ("Journal: for tyst (rms {0:N4}) - ingen anteckning" -f $rmsJ)
-            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget tal hordes - ingen anteckning sparad.', 'Info')
+            $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText 'Inget tal h~ordes - ingen anteckning sparad.'), 'Info')
             return
         }
         $text = Get-TranscriptText $cleanJ
@@ -1577,11 +2005,11 @@ function Open-ScriptWindow([string]$path) {
     if ($script:scriptForm -and -not $script:scriptForm.IsDisposed) { $script:scriptForm.Close() }
     $items = Parse-SalesScript $path
     if (@($items).Count -eq 0) {
-        $tray.ShowBalloonTip(3000, 'Diktatorn', 'Scriptet ar tomt. Anvand ## rubriker och - punkter.', 'Warning')
+        $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText 'Scriptet ~er tomt. Anv~end ## rubriker och - punkter.'), 'Warning')
         return
     }
     $f = New-Object System.Windows.Forms.Form
-    $f.Text = 'Saljscript - ' + [System.IO.Path]::GetFileNameWithoutExtension($path)
+    $f.Text = (SvText 'S~eljscript - ') + [System.IO.Path]::GetFileNameWithoutExtension($path)
     $f.TopMost = $true
     $f.Size = New-Object System.Drawing.Size(390, 580)
     $f.StartPosition = 'Manual'
@@ -1649,7 +2077,7 @@ function Get-AIScript([string]$brief, [string]$existing) {
 
 # Every control and helper the button handlers touch lives in $script: scope on
 # purpose. Event handlers run long after Open-ScriptManager has returned, and a
-# handler that closes over the function's LOCALS finds them gone by then — the
+# handler that closes over the function's LOCALS finds them gone by then - the
 # buttons silently do nothing (verified: clicks produced no effect at all).
 $script:mgrList = $null
 $script:mgrEditor = $null
@@ -1727,7 +2155,7 @@ function Invoke-ScriptAI([bool]$improve) {
 function Open-ScriptManager {
     if ($script:mgrForm -and -not $script:mgrForm.IsDisposed) { $script:mgrForm.Activate(); return }
     $f = New-Object System.Windows.Forms.Form
-    $f.Text = 'Saljscript'
+    $f.Text = (SvText 'S~eljscript')
     $f.Size = New-Object System.Drawing.Size(880, 600)
     $f.StartPosition = 'CenterScreen'
     $f.MinimumSize = New-Object System.Drawing.Size(700, 440)
@@ -2080,11 +2508,11 @@ function Start-Meeting {
     # loopback. Running both would put the assistant's own voice in the transcript
     # as "Ovriga" and confuse the talk-time stats - refuse instead of interleaving.
     if ($script:taBridge) {
-        $tray.ShowBalloonTip(5000, 'Diktatorn', 'Telefonassistenten ar aktiv - stoppa den forst. Bada lyssnar pa systemljudet.', 'Warning')
+        $tray.ShowBalloonTip(5000, 'Diktatorn', (SvText 'Telefonassistenten ~er aktiv - stoppa den f~orst. B~ada lyssnar p~a systemljudet.'), 'Warning')
         return
     }
     if ($script:dictating) { Cancel-Dictation }   # a slow Ctrl+Shift+M chord can arm PTT dictation; drop it
-    # Ask the meeting language up front — a wrong language silently mistranslates
+    # Ask the meeting language up front - a wrong language silently mistranslates
     # the whole meeting, so make it a deliberate per-meeting choice. Cancel = abort.
     $choice = Show-MeetLangPrompt
     if (-not $choice) { return }
@@ -2113,16 +2541,16 @@ function Start-Meeting {
         $script:meeting = $true
         Save-LiveTranscript
         $meetTimer.Start()
-        $miMeeting.Text = 'Stoppa motesinspelning (Ctrl+Shift+M)'
+        $miMeeting.Text = (SvText 'Stoppa m~otesinspelning (Ctrl+Shift+M)')
         $miOpenLive.Enabled = $true
         Set-Status 'SPELAR IN MOTE (live)...' $icoMeet
-        $tray.ShowBalloonTip(2500, 'Diktatorn', 'Motesinspelning startad. Transkriptet vaxer live - se menyn.', 'Info')
+        $tray.ShowBalloonTip(2500, 'Diktatorn', (SvText 'M~otesinspelning startad. Transkriptet v~exer live - se menyn.'), 'Info')
     } catch {
         $script:meeting = $false
         try { $meetTimer.Stop() } catch {}
         try { if ($script:meetRec) { $script:meetRec.Stop() } } catch {}
         Write-Log "Start-Meeting: $($_.Exception.Message)"
-        $tray.ShowBalloonTip(4000, 'Diktatorn', "Kunde inte starta motesinspelning: $($_.Exception.Message)", 'Error')
+        $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText "Kunde inte starta m~otesinspelning: $($_.Exception.Message)"), 'Error')
         Set-Status 'redo' $icoIdle
         Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -2133,7 +2561,7 @@ function Stop-Meeting {
     $script:meeting = $false
     $script:meetFinishing = $true   # blocks dictation hotkeys while the post-meeting batch runs
     $meetTimer.Stop()
-    $miMeeting.Text = 'Starta motesinspelning (Ctrl+Shift+M)'
+    $miMeeting.Text = (SvText 'Starta m~otesinspelning (Ctrl+Shift+M)')
     $miOpenLive.Enabled = $false
     Set-Status 'transkriberar mote...' $icoWork
     [System.Windows.Forms.Application]::DoEvents()
@@ -2141,7 +2569,7 @@ function Stop-Meeting {
         $script:meetRec.Stop()
         Process-ReadyChunks ($script:meetRec.ChunkIndex + 1)   # remaining chunks incl. the final partial one
         if (($script:meetLines.Count -eq 0) -and -not $script:meetFailed) {
-            $tray.ShowBalloonTip(3000, 'Diktatorn', 'Inget tal fangades under motet.', 'Warning')
+            $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText 'Inget tal f~angades under m~otet.'), 'Warning')
             Remove-Item $script:meetOutFile -ErrorAction SilentlyContinue
             Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
             return
@@ -2175,17 +2603,17 @@ function Stop-Meeting {
             }
         }
         if ($script:meetFailed) {
-            $tray.ShowBalloonTip(6000, 'Diktatorn', 'Mote delvis transkriberat. Orort ljud sparat i temp (se slutet av filen).', 'Warning')
+            $tray.ShowBalloonTip(6000, 'Diktatorn', (SvText 'M~ote delvis transkriberat. Or~ort ljud sparat i temp (se slutet av filen).'), 'Warning')
             # KEEP $meetDir: it holds the chunk audio that failed to transcribe
         } else {
-            $tray.ShowBalloonTip(3000, 'Diktatorn', "Mote transkriberat: $([System.IO.Path]::GetFileName($script:meetOutFile))", 'Info')
+            $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText "M~ote transkriberat: $([System.IO.Path]::GetFileName($script:meetOutFile))"), 'Info')
             Remove-Item $script:meetDir -Recurse -Force -ErrorAction SilentlyContinue
         }
         Invoke-Item $script:meetOutFile
     } catch {
         Write-Log "Stop-Meeting: $($_.Exception.Message)"
         # Do NOT delete $meetDir on error - the raw chunk audio is the only copy left.
-        $tray.ShowBalloonTip(6000, 'Diktatorn', "Fel vid motesavslut. Ljud sparat i: $($script:meetDir)", 'Error')
+        $tray.ShowBalloonTip(6000, 'Diktatorn', (SvText "Fel vid m~otesavslut. Ljud sparat i: $($script:meetDir)"), 'Error')
     } finally {
         Clear-OldMeetingAudio   # purge archives past the retention window
         $script:meetFinishing = $false; Set-Status 'redo' $icoIdle
@@ -2209,10 +2637,10 @@ $meetTimer.add_Tick({
         try {
             if (-not $script:meetRec.MicCaptured) {
                 Write-Log 'Ljudkontroll: mikrofonen kunde inte oppnas'
-                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Mikrofonen kunde inte oppnas - din rost spelas inte in. Valj en annan mikrofon i menyn.', 'Warning')
+                $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText 'Mikrofonen kunde inte ~oppnas - din r~ost spelas inte in. V~elj en annan mikrofon i menyn.'), 'Warning')
             } elseif ($script:meetRec.MicPeak -lt 0.01) {
                 Write-Log ("Ljudkontroll: mikrofon tyst (peak {0:N4})" -f $script:meetRec.MicPeak)
-                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Mikrofonen verkar tyst - din rost spelas kanske inte in. Kontrollera att ratt mikrofon ar vald och inte avstangd.', 'Warning')
+                $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText 'Mikrofonen verkar tyst - din r~ost spelas kanske inte in. Kontrollera att r~ett mikrofon ~er vald och inte avst~engd.'), 'Warning')
             }
         } catch {}
     }
@@ -2221,7 +2649,7 @@ $meetTimer.add_Tick({
         try {
             if ($script:meetRec.SysSeconds -lt 2) {
                 Write-Log ("Ljudkontroll: inget datorljud ({0:N1}s pa {1:N0}s)" -f $script:meetRec.SysSeconds, $elapsed)
-                $tray.ShowBalloonTip(9000, 'Diktatorn', 'Inget datorljud har horts - de andra deltagarna spelas kanske inte in. Kontrollera att motesljudet gar via ratt uppspelningsenhet (t.ex. inte ett headset som inte fangas).', 'Warning')
+                $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText 'Inget datorljud har h~orts - de andra deltagarna spelas kanske inte in. Kontrollera att m~otesljudet g~ar via r~ett uppspelningsenhet (t.ex. inte ett headset som inte f~angas).'), 'Warning')
             }
         } catch {}
     }
@@ -2287,7 +2715,7 @@ $meetTimer.add_Tick({
 # --- Hotkeys: 1 = dictation toggle (Ctrl+Shift+D), 2 = meeting toggle (Ctrl+Shift+M) ---
 $hk = New-Object WfNative
 # RegisterHotKey fails if another app already owns the combo. Swallowing that
-# (a bare [void]) makes the key silently dead — report it instead.
+# (a bare [void]) makes the key silently dead - report it instead.
 $hkFailed = @()
 foreach ($h in @(
     @{ id = 1; vk = 0x44; name = 'Ctrl+Shift+D (diktering)' },
@@ -2300,7 +2728,7 @@ foreach ($h in @(
     }
 }
 if ($hkFailed.Count -gt 0) {
-    $tray.ShowBalloonTip(6000, 'Diktatorn', "Dessa kortkommandon ar upptagna av en annan app och fungerar inte:`n" + ($hkFailed -join "`n"), 'Warning')
+    $tray.ShowBalloonTip(6000, 'Diktatorn', (SvText "Dessa kortkommandon ~er upptagna av en annan app och fungerar inte:`n") + ($hkFailed -join "`n"), 'Warning')
 }
 # Integrated graphics run Whisper roughly 30x slower than a discrete card
 # (measured: 0.3x vs 10.9x realtime on the same clip), which makes local mode
@@ -2309,11 +2737,11 @@ if (-not (Test-DiscreteAdapter $script:adapter)) {
     $better = @($script:adapters | Where-Object { Test-DiscreteAdapter $_ })[0]
     if ($better) {
         $tray.ShowBalloonTip(9000, 'Diktatorn',
-            "Lokal transkribering kor pa integrerad grafik ($script:adapter) och blir da mycket langsam.`n`nDu har $better - valj det under Grafikkort i menyn.",
+            (SvText "Lokal transkribering k~or p~a integrerad grafik ($script:adapter) och blir d~a mycket l~angsam.`n`nDu har $better - v~elj det under Grafikkort i menyn."),
             'Warning')
     } else {
         $tray.ShowBalloonTip(9000, 'Diktatorn',
-            "Inget dedikerat grafikkort hittades - lokal transkribering blir langsam pa $script:adapter.`n`nVal Groq moln under Transkribering for snabbare resultat.",
+            (SvText "Inget dedikerat grafikkort hittades - lokal transkribering blir l~angsam p~a $script:adapter.`n`nV~elj Groq moln under Transkribering f~or snabbare resultat."),
             'Warning')
     }
     Write-Log "VARNING: integrerad grafik i bruk ($script:adapter)"
@@ -2389,5 +2817,5 @@ $miQuit.add_Click({
 })
 
 Clear-OldMeetingAudio   # purge any kept meeting audio past the retention window
-$tray.ShowBalloonTip(2500, 'Diktatorn', 'Redo. Hall Ctrl+Shift for att diktera, Ctrl+Shift+M for mote.', 'Info')
+$tray.ShowBalloonTip(2500, 'Diktatorn', (SvText 'Redo. H~all Ctrl+Shift f~or att diktera, Ctrl+Shift+M f~or m~ote.'), 'Info')
 [System.Windows.Forms.Application]::Run($appContext)

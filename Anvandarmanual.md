@@ -201,11 +201,15 @@ försiktig – den bockar bara av det ni faktiskt diskuterat, inte det som råka
 ## 3d. Diktatorn-fönstret (dashboard)
 
 Dubbelklicka på systemfältsikonen (eller högerklicka → **Öppna Diktatorn...**) för att öppna ett fönster
-med fyra flikar. Tray-ikonen och kortkommandona finns kvar som snabbvägar – fönstret är ett komplement.
+med fem flikar. Tray-ikonen och kortkommandona finns kvar som snabbvägar – fönstret är ett komplement.
 
 - **Möte** – visas live medan ett möte pågår: tid, talandel (du mot övriga), nivåmätare för din mikrofon
   och datorljudet med **OK/TYST?**-markering, krokodilvarning, säljscript-status och det växande
-  transkriptet. Här ser du direkt om något är tyst.
+  transkriptet. Här ser du direkt om något är tyst. Pågår inget möte står det så, i stället för tomma
+  mätare som ser ut som ett fel.
+- **Telefon** – nummerfält med **Ring**-knapp, och start/stopp för AI-assistenten (punkt 9). Skriv numret
+  hur du vill – `070-123 45 67`, `+46 70 123 45 67` eller `0046...` – det översätts till `+46701234567`
+  innan det lämnas över. Enter ringer. Se punkt 9c för vad knappen faktiskt gör.
 - **Inställningar** – allt på ett ställe: mikrofon, modell, transkribering (lokal/moln), grafikkort,
   mötesläge, mötesspråk, coach-motor, talanalys, spara-ljud och API-nycklar.
 - **Historik** – alla dina möten. Öppna transkript, öppna ljudmappen, eller **Återskapa transkript** från
@@ -377,6 +381,33 @@ Testa alltid **Testa kabeln** först i ett nytt samtal – tonen visar direkt om
 utan att blanda in AI:n. Hör motparten pipen är resten bara att köra.
 
 När du stoppar assistenten hämtas en sammanfattning av samtalet och visas som en ballong.
+
+Samma start- och stoppknapp finns i **Telefon**-fliken i Diktatorn-fönstret, tillsammans med kabeltestet
+och en statusrad som visar vilken utgång assistenten talar till.
+
+### 9c. Ring-knappen – vad den gör och inte gör
+
+**Ring-knappen kopplar inte upp något samtal.** Den normaliserar numret och lämnar över det till din
+samtalsapp; själva uppringningen trycker du på där. Ljudvägen är oförändrad – loopback in, `CABLE Input` ut.
+
+Det finns ingen väg runt det. Bryggan är app-agnostisk med flit, och ingen av samtalsapparna erbjuder ett
+API för att koppla upp ett samtal åt någon annan. Vinsten är att du slipper leta fram fönstret och knappa
+in numret igen.
+
+Välj i **Lämna över till** vilken app som ska ta emot. Listan visar bara appar som faktiskt är installerade:
+
+| Val | Numret hamnar i |
+|---|---|
+| **Telefonlänk** | Telefonlänks nummerfält – ringer via din mobil |
+| **WhatsApp** | WhatsApp-chatten med det numret |
+| **Teams** | Teams-samtal till numret |
+| **Systemets tel:-hanterare** | Vad Windows nu råkar ha kopplat till `tel:` – kontrollera det innan du litar på valet |
+
+Förhandsraden under fältet visar exakt vilket nummer som lämnas över, till vilken app. Blir den röd är
+numret inte färdigskrivet, och **Ring** är avstängd tills det är det.
+
+**Vill du ringa direkt från Diktatorn på riktigt** krävs en SIP-trunk och ett eget nummer hos en operatör.
+Då försvinner både VB-CABLE och loopbacken – men det är en annan bygge än det här.
 
 ### Om det inte fungerar
 

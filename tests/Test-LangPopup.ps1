@@ -6,19 +6,24 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+Import-AppUi
 Import-AppFunction 'Diktatorn.ps1' @('Show-MeetLangPrompt')
 $script:meetLang = 'sv'
 
 function Invoke-Popup([string]$buttonText) {
     # ShowDialog blocks, so a WinForms timer clicks (or closes) from inside the loop.
+    $title = SvText 'M~otesspr~ak'
     $t = New-Object System.Windows.Forms.Timer
     $t.Interval = 250
     $t.add_Tick({
         $t.Stop()
-        $f = [System.Windows.Forms.Application]::OpenForms | Where-Object { $_.Text -eq 'Motessprak' } | Select-Object -First 1
+        # Fall back to any open form: a title typo must fail the assertion, not
+        # hang ShowDialog until the runner's timeout.
+        $f = @([System.Windows.Forms.Application]::OpenForms | Where-Object { $_.Text -eq $title })[0]
+        if (-not $f) { $f = @([System.Windows.Forms.Application]::OpenForms)[0] }
         if (-not $f) { return }
         if ($buttonText) {
-            $b = $f.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Text -eq $buttonText } | Select-Object -First 1
+            $b = @($f.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Text -eq $buttonText })[0]
             if ($b) { $b.PerformClick(); return }
         }
         $f.Close()

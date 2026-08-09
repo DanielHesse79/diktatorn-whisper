@@ -5,6 +5,7 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+Import-AppUi
 Import-AppFunction 'Diktatorn.ps1' @('Build-TrendTab', 'Refresh-TrendView')
 
 $trendCsv = Join-Path $env:TEMP 'dikt_test_trend.csv'
