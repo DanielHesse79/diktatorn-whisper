@@ -866,25 +866,12 @@ if ($script:adapters.Count -gt 1) {
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $a
         $item.Tag = $a
         $item.Checked = ($a -eq $script:adapter)
-        $item.add_Click({
-            $chosen = [string]$this.Tag
-            try { [System.IO.File]::WriteAllText($gpuCfg, $chosen) } catch {}
-            $script:adapter = $chosen
-            foreach ($it in $script:gpuMenuItems) { $it.Checked = ($it.Tag -eq $chosen) }
-            Set-Status 'byter grafikkort...' $icoWork
-            try {
-                Reload-Model $script:modelFile
-                if (Test-DiscreteAdapter $chosen) {
-                    $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText "Anv~ender nu: $chosen"), 'Info')
-                } else {
-                    $tray.ShowBalloonTip(7000, 'Diktatorn', (SvText "Anv~ender nu: $chosen`n`nOBS: integrerad grafik - lokal transkribering blir mycket l~angsam."), 'Warning')
-                }
-            } catch {
-                Write-Log "GPU-byte misslyckades: $($_.Exception.Message)"
-                $tray.ShowBalloonTip(4000, 'Diktatorn', (SvText "Kunde inte anv~enda $chosen"), 'Error')
-            }
-            Set-Status 'redo' $icoIdle
-        })
+        # Set-Gpu owns the switch - config write, model reload, re-checking these
+        # menu items, and the integrated-graphics warning - so the dashboard
+        # dropdown and this menu can never drift apart. It is defined further down
+        # the file; the handler only runs long after the script has finished
+        # loading, same as the dashboard entry below.
+        $item.add_Click({ Set-Gpu ([string]$this.Tag) })
         [void]$miGpu.DropDownItems.Add($item)
         $script:gpuMenuItems += $item
     }
