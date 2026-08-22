@@ -170,15 +170,27 @@ public class WfNative : NativeWindow {
     [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int cb);
     const uint INPUT_KEYBOARD=1, KEYEVENTF_KEYUP=0x2, KEYEVENTF_UNICODE=0x4;
     const ushort VK_RETURN=0x0D;
+    // Skickar tecken i block i stallet for ett i taget. En femminuters diktering
+    // blir ~3600 tecken = 7200 SendInput-anrop i rad utan paus, och da tappar
+    // mottagande appar tecken eller allt. Blocken later dem hinna med.
     public static void TypeText(string text) {
+        const int BLOCK = 40;
+        List<INPUT> buf = new List<INPUT>(BLOCK * 2);
         foreach (char c in text) {
-            if (c == '\n') { SendVk(VK_RETURN); continue; }
+            if (c == '\n') { Skicka(buf); SendVk(VK_RETURN); continue; }
             if (c == '\r') continue;
-            INPUT[] inp = new INPUT[2];
-            inp[0].type = INPUT_KEYBOARD; inp[0].ki.wScan = c; inp[0].ki.dwFlags = KEYEVENTF_UNICODE;
-            inp[1].type = INPUT_KEYBOARD; inp[1].ki.wScan = c; inp[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-            SendInput(2, inp, Marshal.SizeOf(typeof(INPUT)));
+            INPUT ned = new INPUT(); ned.type = INPUT_KEYBOARD; ned.ki.wScan = c; ned.ki.dwFlags = KEYEVENTF_UNICODE;
+            INPUT upp = new INPUT(); upp.type = INPUT_KEYBOARD; upp.ki.wScan = c; upp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+            buf.Add(ned); buf.Add(upp);
+            if (buf.Count >= BLOCK * 2) { Skicka(buf); System.Threading.Thread.Sleep(3); }
         }
+        Skicka(buf);
+    }
+    static void Skicka(List<INPUT> buf) {
+        if (buf.Count == 0) return;
+        INPUT[] arr = buf.ToArray();
+        SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
+        buf.Clear();
     }
     static void SendVk(ushort vk) {
         INPUT[] inp = new INPUT[2];
@@ -1913,8 +1925,20 @@ function Stop-Dictation {
         $secs = Get-WavSeconds $tmpDict
         $text = Get-TranscriptText $tmpDict
         if ($text) {
+            # Urklipp som skyddsnat innan utskrivningen. TypeText skriver in i
+            # det fonster som har fokus, och en lang text hinner tappa det -
+            # da finns texten anda kvar att klistra in.
+            try { Set-Clipboard -Value $text } catch { }
             Start-Sleep -Milliseconds 40; [WfNative]::TypeText($text + ' ')
             Update-Stats $text $secs
+            if ($text.Length -gt 400) {
+                $tray.ShowBalloonTip(4000, 'Diktatorn', "$($text.Length) tecken utskrivna. Ligger aven pa urklipp - Ctrl+V om nagot fastnade.", 'Info')
+            }
+        } else {
+            # Tom text gav forut ingen signal alls: statusen gick tillbaka till
+            # 'redo' och dikteringen sag ut att lyckas medan ingenting hande.
+            Write-Log 'Stop-Dictation: transkriberingen gav tom text'
+            $tray.ShowBalloonTip(6000, 'Diktatorn', 'Transkriberingen gav ingen text. Ljudet ligger kvar i %TEMP%\whisprflow_dict.wav tills du dikterar nasta gang - kopiera undan det om du vill radda innehallet.', 'Warning')
         }
     } catch {
         Write-Log "Stop-Dictation: $($_.Exception.Message)"

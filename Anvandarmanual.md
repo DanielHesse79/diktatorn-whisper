@@ -39,6 +39,19 @@ Använd push-to-talk för korta saker, toggle för längre stycken (då slipper 
 - **Rätt mikrofon spelar roll** – ett headset ger renare ljud än rumsmikrofon (se punkt 4).
 - Blir ett ord fel? Diktera om den biten, eller rätta för hand – snabbare än att tjafsa med tekniken.
 
+### Långa dikteringar
+
+Texten läggs alltid **på urklipp** innan den skrivs ut. Hamnade den i fel fönster – eller inte alls –
+trycker du bara **Ctrl+V** där du ville ha den.
+
+Vid längre dikteringar (över ~400 tecken) säger Diktatorn till med en ballong att texten också finns på
+urklipp. Utskrivningen sker i block så att mottagande program hinner med; ett tecken i taget gjorde att
+långa texter tappades.
+
+Får du varningen **"Transkriberingen gav ingen text"** ligger ljudet kvar i
+`%TEMP%\whisprflow_dict.wav` fram till nästa diktering. Kopiera undan filen om du vill rädda innehållet –
+den går att transkribera i efterhand.
+
 ---
 
 ## 3. Mötestranskribering
