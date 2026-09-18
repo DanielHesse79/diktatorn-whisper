@@ -308,6 +308,10 @@ samma meny.
 | Det tar lång tid | Prova en snabbare modell, eller slå på Groq moln-läge (punkt 6). |
 | Mötet blev tomt | Diktatorn fångar **datorljud** – det måste faktiskt komma ljud ur högtalarna/hörlurarna under mötet. |
 | Texten kapas i långa meningar | Bör vara löst i senaste versionen – hör av dig om det återkommer. |
+| Transkriptet innehåller "Textning.nu", "Tack för att du tittade" eller liknande | Whisper hittar på sådana rader när den får tystnad. Sedan 1.3.1 hoppas tysta bitar över och de kända fraserna rensas bort. Står det fortfarande mycket sådant var mikrofonen troligen tyst – se nästa rad. |
+| Motparten i telefonen hör mig inte | Windows standardmikrofon pekar på en tyst eller virtuell ingång, t.ex. **Voicemeeter Out B3** efter att Voicemeeter installerats. Öppna Ljud (`mmsys.cpl`) → Inspelning, högerklicka din riktiga mikrofon och välj **både** "Ange som standardenhet" och "Ange som standardkommunikationsenhet". Starta sedan om Telefonlänk. |
+| Ballongen "Hittar ingen riktig mikrofon" vid start | Diktatorn hittar bara virtuella ingångar (Voicemeeter/CABLE). Anslut en mikrofon och välj den under **Mikrofon** i menyn. |
+| AI-coachen eller sälj-scriptets bockar gör ingenting | Groq har tagit bort den modell som var inställd. Sedan 1.3.1 byter Diktatorn själv till en modell som finns. Har du angett egen modell i `diktatorn-coach-model.txt` behåller Diktatorn den, så byt den själv om den har tagits bort. |
 
 ---
 

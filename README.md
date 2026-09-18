@@ -258,6 +258,25 @@ there's nothing to build.
   deadlocks against the UI thread (caused a constant 5 s delay + truncated audio).
 - Don't transcribe pure digital silence — it crashes the native library. Warm up on a real speech clip.
 - A Plexgear (and many) USB headsets enumerate as **"USB PnP Sound Device"**.
+- **Gate meeting chunks on voiced samples, not file size.** `AudioPrep.Clean` keeps up to 1 s of every
+  silent stretch, so a completely silent 30 s chunk still comes out at ~32 kB, which is past the old
+  "< 16 kB = silence" check. Whisper then fills it with "Textning.nu", "Tack till elever och personal ..."
+  and similar subtitle credits. The gate now needs ≥ 0.5 s of samples above the silence threshold
+  (`AudioPrep.VoicedSamples`), and `Remove-WhisperNoise` strips the known credit lines as a second
+  net. On three real phone-call recordings the old gate sent all 29 chunks to Whisper. The new one
+  sent the 4 that had speech and skipped 25.
+- **Never pick a virtual input as the mic by accident.** Installing Voicemeeter adds eight inputs and
+  put a mute bus ("Voicemeeter Out B3") first in the list and as the Windows default. Without a saved
+  choice, Diktatorn now skips Voicemeeter/VB-Audio/CABLE/stereo-mix inputs and warns at startup if
+  those are all there is. WaveIn indices shift when devices appear, so recordings look the chosen mic
+  up **by name** at record time. Phone Link has no mic setting of its own and uses the plain Windows
+  default, so a virtual default mic means the other party hears silence.
+- **Hosted LLM models get retired.** Groq removed `llama-3.3-70b-versatile` and answered 404
+  `model_not_found`. Windows PowerShell 5.1 shows only "(404)" and hides the body, so the coach and the
+  sales-script auto-check were broken without any visible error. The coach now reads the error body,
+  finds a model that is still listed (`$coachFallbacks`) and retries once. A model named in
+  `diktatorn-coach-model.txt` is never swapped. `openai/gpt-oss-*` are reasoning models: they need
+  `reasoning_effort = low` and room in `max_tokens`, otherwise the reply comes back empty.
 
 ## Tests
 
@@ -278,7 +297,12 @@ Each test runs in its own Windows PowerShell 5.1 STA process (the app's runtime)
 clone until `Install-Diktatorn.ps1` has run); `Test-CoachEngine` calls the real Groq API and only
 runs with `-Network`. `Test-PhoneDial` verifies the whole dial chain without ever placing a call —
 building the handover URI is a separate function from opening it, precisely so it can be asserted.
-The suite takes ~10 s.
+`Test-ChunkGate` feeds synthetic speech, digital silence and -74 dB blips through the real
+`AudioPrep`. It shows that the old size gate lets silence through, and it checks the Whisper credit
+filter. `Test-MicSelect` covers mic selection when Voicemeeter/CABLE inputs come first and looks the
+mic up by name against this machine's real devices. `Test-CoachEngine` also points the coach at a
+retired model and expects it to switch to another model by itself. The suite takes ~15 s
+(`-Network` adds a few seconds).
 
 ## Credits & license
 

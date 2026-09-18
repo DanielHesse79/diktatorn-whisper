@@ -55,7 +55,7 @@ $coachModelCfg     = Join-Path $root 'diktatorn-coach-model.txt'   # optional: o
 $openrouterKeyFile = Join-Path $root 'diktatorn-openrouter.txt'    # OpenRouter API key (sk-or-...)
 $coachArchive      = Join-Path $outDir 'coach-arkiv.md'            # coach memory: past reports (local, private)
 $coachDefaults = @{
-    groq       = @{ url = 'https://api.groq.com/openai/v1/chat/completions'; model = 'llama-3.3-70b-versatile' }
+    groq       = @{ url = 'https://api.groq.com/openai/v1/chat/completions'; model = 'openai/gpt-oss-120b' }
     ollama     = @{ url = 'http://localhost:11434/v1/chat/completions';      model = 'llama3.1' }
     openrouter = @{ url = 'https://openrouter.ai/api/v1/chat/completions';   model = 'openrouter/auto' }
 }
@@ -379,12 +379,13 @@ using System.Collections.Generic;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 public static class AudioPrep {
+    public const float SilenceThr = 0.0075f;   // ~ -42 dB: below this counts as silence
     public static void Clean(string inPath, string outPath) {
         using (var reader = new AudioFileReader(inPath)) {
             ISampleProvider sp = reader;
             if (sp.WaveFormat.Channels == 2) sp = new StereoToMonoSampleProvider(sp) { LeftVolume = 0.5f, RightVolume = 0.5f };
             var rs = new WdlResamplingSampleProvider(sp, 16000);
-            float thr = 0.0075f;        // ~ -42 dB: below this counts as silence
+            float thr = SilenceThr;
             int maxSilent = 16000;      // keep at most ~1 s of contiguous near-silence
             float[] buf = new float[16000];
             int read; int silent = 0;
@@ -402,6 +403,20 @@ public static class AudioPrep {
                     if (keep.Count > 0) writer.WriteSamples(keep.ToArray(), 0, keep.Count);
                 }
             }
+        }
+    }
+    // Samples above the silence threshold, i.e. actual speech. Clean() keeps up to one
+    // second of every silent stretch, so a completely silent chunk still came out as a
+    // 32 kB file - file size says nothing about whether anyone spoke. This does.
+    public static int VoicedSamples(string path) {
+        using (var reader = new AudioFileReader(path)) {
+            ISampleProvider sp = reader;
+            if (sp.WaveFormat.Channels == 2) sp = new StereoToMonoSampleProvider(sp) { LeftVolume = 0.5f, RightVolume = 0.5f };
+            if (sp.WaveFormat.SampleRate != 16000) sp = new WdlResamplingSampleProvider(sp, 16000);
+            float[] buf = new float[16000]; int read; int n = 0;
+            while ((read = sp.Read(buf, 0, buf.Length)) > 0)
+                for (int i = 0; i < read; i++) if (Math.Abs(buf[i]) >= SilenceThr) n++;
+            return n;
         }
     }
     // Loudness of a 16-bit PCM file, 0..1. Room noise measures ~0.004 (-48 dB);
@@ -520,18 +535,45 @@ $script:micNames = @()
 for ($i = 0; $i -lt [NAudio.Wave.WaveIn]::DeviceCount; $i++) {
     $script:micNames += [NAudio.Wave.WaveIn]::GetCapabilities($i).ProductName
 }
+# Virtual inputs (mixer buses, audio cables, loopback) are never a microphone. They go
+# silent the moment the program behind them isn't running - and Voicemeeter puts itself
+# FIRST in the Windows list when installed, so "take the first one" pointed straight at
+# a mute bus (2026-09-18: calls where nobody could hear the user).
+$virtualMicPattern = 'Voicemeeter|VB-Audio|CABLE Output|Virtual Audio|Virtual Cable|VAIO|Stereo ?mix|Stereomix'
+function Test-VirtualMic([string]$n) { return [bool]($n -match $virtualMicPattern) }
+$script:micOnlyVirtual = $false
+$script:micHow = 'automatiskt vald'
 function Resolve-MicDevice {
     $saved = $null
     if (Test-Path $micCfg) { $saved = (Get-Content $micCfg -Raw -ErrorAction SilentlyContinue).Trim() }
-    if ($saved) { for ($i=0; $i -lt $script:micNames.Count; $i++) { if ($script:micNames[$i] -eq $saved) { return $i } } }
-    for ($i=0; $i -lt $script:micNames.Count; $i++) { if ($script:micNames[$i] -like "*$preferMic*") { return $i } }
+    # An explicit choice in the menu always wins - even a virtual one, for people who run Voicemeeter on purpose.
+    if ($saved) { for ($i=0; $i -lt $script:micNames.Count; $i++) { if ($script:micNames[$i] -eq $saved) { $script:micHow = 'vald i menyn'; return $i } } }
+    for ($i=0; $i -lt $script:micNames.Count; $i++) { if ($script:micNames[$i] -like "*$preferMic*" -and -not (Test-VirtualMic $script:micNames[$i])) { return $i } }
+    for ($i=0; $i -lt $script:micNames.Count; $i++) { if (-not (Test-VirtualMic $script:micNames[$i])) { return $i } }
+    $script:micOnlyVirtual = ($script:micNames.Count -gt 0)
     return 0
 }
 $script:micDevice = Resolve-MicDevice
+Write-Log ('Mikrofon: ' + $(if ($script:micNames.Count) { $script:micNames[$script:micDevice] } else { '(ingen)' }) + " ($($script:micHow))")
+
 function Set-MicDevice([int]$idx) {
     $script:micDevice = $idx
     try { [System.IO.File]::WriteAllText($micCfg, $script:micNames[$idx]) } catch {}
     foreach ($it in $script:micMenuItems) { $it.Checked = ($it.Tag -eq $idx) }
+}
+# Which WaveIn device to record from RIGHT NOW. Indices are read once at startup, but
+# devices come and go - installing Voicemeeter adds eight - and a stale index then
+# silently records the wrong device. Look the chosen mic up by NAME every time.
+function Get-RecMicDevice {
+    $want = if ($script:micDevice -lt $script:micNames.Count) { $script:micNames[$script:micDevice] } else { '' }
+    $fresh = @()
+    for ($i = 0; $i -lt [NAudio.Wave.WaveIn]::DeviceCount; $i++) { $fresh += [NAudio.Wave.WaveIn]::GetCapabilities($i).ProductName }
+    for ($i = 0; $i -lt $fresh.Count; $i++) { if ($fresh[$i] -eq $want) { return $i } }
+    # The chosen mic is gone (unplugged?). Fall back to a real one, never a virtual bus.
+    for ($i = 0; $i -lt $fresh.Count; $i++) {
+        if (-not (Test-VirtualMic $fresh[$i])) { Write-Log "Mikrofonen '$want' saknas - spelar in fran '$($fresh[$i])'"; return $i }
+    }
+    return 0
 }
 function Set-Model([string]$file) {
     if ($script:dictating -or $script:meeting) { return }
@@ -1674,7 +1716,7 @@ function Rebuild-Transcript($audioDir, $lang, $outFile, $statusLabel) {
                 $w.Write($b, 44, $b.Length - 44); $w.Dispose()
             } catch { continue }
         }
-        if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 16000) { continue }
+        if (-not (Test-Path $tmp) -or ([AudioPrep]::VoicedSamples($tmp) -lt $minVoicedSamples)) { continue }
         try {
             if ($script:backend -eq 'groq') {
                 $key = Get-GroqKey; if (-not $key) { throw 'Ingen Groq-nyckel' }
@@ -1684,7 +1726,8 @@ function Rebuild-Transcript($audioDir, $lang, $outFile, $statusLabel) {
                 $text = ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
             }
         } catch { continue }
-        if ($text -and $text -notmatch '^[\s\.\-\!\?]*$') {
+        $text = Remove-WhisperNoise $text
+        if ($text) {
             $ts = '{0:00}:{1:00}' -f [math]::Floor($c.idx * 30 / 60), (($c.idx * 30) % 60)
             $lines += "[00:$ts] $($c.label): $text"
         }
@@ -1875,10 +1918,10 @@ function Get-TranscriptText([string]$wav) {
     if ($script:backend -eq 'groq') {
         $key = Get-GroqKey
         if (-not $key) { $tray.ShowBalloonTip(4000, 'Diktatorn', 'Ingen Groq-nyckel angiven.', 'Warning'); return $null }
-        return ([Cloud]::Transcribe($key, $wav, $groqModel, $language)).Trim()
+        return (Remove-WhisperNoise ([Cloud]::Transcribe($key, $wav, $groqModel, $language)).Trim())
     }
     $seg = Transcribe-File -model $script:model -path $wav -language $language
-    return ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
+    return (Remove-WhisperNoise (((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '))
 }
 
 # --- Speaking-rate stats ---
@@ -1901,7 +1944,7 @@ $script:dictating = $false
 $script:micRec = New-Object MicRecorder
 function Start-Dictation {
     Remove-Item $tmpDict -ErrorAction SilentlyContinue
-    if (-not $script:micRec.Start($tmpDict, $script:micDevice)) {
+    if (-not $script:micRec.Start($tmpDict, (Get-RecMicDevice))) {
         Write-Log 'Start-Dictation: mic could not be opened'
         $tray.ShowBalloonTip(3000, 'Diktatorn', 'Mikrofonen kunde inte oppnas. Valj en annan mick i menyn.', 'Warning')
         return $false
@@ -1952,7 +1995,7 @@ $script:journaling = $false
 function Start-Journal {
     if ($script:meeting -or $script:meetFinishing -or $script:dictating) { return }
     Remove-Item $tmpJournal -ErrorAction SilentlyContinue
-    if (-not $script:micRec.Start($tmpJournal, $script:micDevice)) {
+    if (-not $script:micRec.Start($tmpJournal, (Get-RecMicDevice))) {
         Write-Log 'Start-Journal: mic could not be opened'
         $tray.ShowBalloonTip(3000, 'Diktatorn', (SvText 'Mikrofonen kunde inte ~oppnas.'), 'Warning')
         return
@@ -2268,11 +2311,30 @@ $labelOthers = [string][char]214 + 'vriga'   # "Ovriga" with a proper capital O-
 # Transcribe one chunk file: clean -> silence/size gate -> backend -> text + voiced seconds.
 # Returns $null for a legitimately SILENT chunk (safe to drop). THROWS on a transcription
 # error (bad key, HTTP failure, native crash) so the caller keeps the audio for recovery.
+# Minsta mangd faktiskt tal for att ett block ska ga till Whisper. Kalibrerat mot riktiga
+# samtal 2026-09-18: varje block under 0,5 s gav pahitt ("Textning.nu", "Tack till elever
+# och personal vid ..."), varje block over var riktigt tal. Helt tysta block matte 0.
+$minVoicedSamples = 8000   # 0,5 s vid 16 kHz
+
+# Whisper ar tranad pa TV-undertexter och fyller tystnad med deras eftertexter. De har
+# fraserna sager ingen i ett samtal - rensa bort dem var de an dyker upp.
+$whisperCredits = '(?i)(svensk)?textning\.nu|textning:?\s*stina hedin|www\.btistudios\.com|undertexter (fr.n|av) amara\.org(-gemenskapen)?|subtitles by the amara\.org community'
+# Fraser som faktiskt kan sagas - underkanns bara om de ar ALLT blocket innehaller.
+$whisperOnlyIf = '(?i)^\W*(tack f.r att (du|ni) (tittade|tittat|lyssnade)|tack till elever och personal\b.*|thanks? (you )?for watching)\W*$'
+function Remove-WhisperNoise([string]$t) {
+    if (-not $t) { return $null }
+    $t = (($t -replace $whisperCredits, ' ') -replace '\s{2,}', ' ').Trim()
+    if (-not $t -or $t -match '^[\s\.\-\!\?,]*$' -or $t -match $whisperOnlyIf) { return $null }
+    return $t
+}
+
 function Get-ChunkText([string]$wav) {
     if (-not (Test-Path $wav) -or ((Get-Item $wav).Length -lt 8192)) { return $null }   # no/negligible audio
     $clean = Join-Path $script:meetDir 'clean.wav'
     [AudioPrep]::Clean($wav, $clean)                                                    # throws -> caller preserves audio
-    if (-not (Test-Path $clean) -or ((Get-Item $clean).Length -lt 16000)) { return $null }   # <0.5 s voiced = silence
+    # Mat tal, inte filstorlek: Clean behaller upp till 1 s av varje tyst stracka, sa ett helt
+    # tyst block blev 32 kB och gick rakt till Whisper - som svarade "Textning.nu".
+    if (-not (Test-Path $clean) -or ([AudioPrep]::VoicedSamples($clean) -lt $minVoicedSamples)) { return $null }
     $secs = Get-WavSeconds $clean
     $lang = Get-ActiveMeetLang   # always 'sv' or 'en', never empty
     if ($script:backend -eq 'groq') {
@@ -2283,7 +2345,8 @@ function Get-ChunkText([string]$wav) {
         $seg = Get-Transcript $clean $lang
         $text = ((($seg | ForEach-Object { $_.Text }) -join ' ').Trim()) -replace '\s+', ' '
     }
-    if (-not $text -or $text -match '^[\s\.\-\!\?]*$') { return $null }
+    $text = Remove-WhisperNoise $text
+    if (-not $text) { return $null }
     @{ text = $text; secs = $secs }
 }
 
@@ -2334,26 +2397,90 @@ function Add-TrendRow([int]$mins, [int]$sharePct, [double]$fillPerMin, [int]$que
         Add-Content -Path $trendCsv -Value $row
     } catch { Write-Log "trend: $($_.Exception.Message)" }
 }
-# Generic OpenAI-protocol chat call, used by every coach provider. Decodes the response
-# explicitly as UTF-8 (PS 5.1 Invoke-RestMethod mis-decodes JSON bodies as Latin-1).
-function Invoke-CoachLLM([string]$system, [string]$user) {
-    $p = $script:coach
-    $def = $coachDefaults[$p]
-    $model = $def.model
-    if (Test-Path $coachModelCfg) { $m = (Get-Content $coachModelCfg -Raw -ErrorAction SilentlyContinue).Trim(); if ($m) { $model = $m } }
-    $key = Get-CoachKey $p
-    if (-not $key) { throw "Ingen API-nyckel for coach-motorn ($p)" }
+# Default chosen by measurement 2026-09-18 on the live sales-script checklist: gpt-oss-120b
+# 15/15 correct, gpt-oss-20b 15/15, qwen3.8-27b 14/15 (ticked a greeting in pure small talk).
+# All three write a good Swedish coach report.
+# Fallback models in order of preference. Groq retires models regularly and then answers
+# 404 model_not_found - that silently broke the coach and the live sales-script checklist
+# for weeks (2026-09), because the log only ever showed "(404)". Now we switch ourselves
+# and log why.
+$coachFallbacks = @{
+    groq       = @('openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b')
+    openrouter = @('openrouter/auto')
+    ollama     = @()
+}
+$script:coachModelAuto = $null
+
+# PS 5.1 hides the response body of a failed request behind a bare "(404)".
+function Get-HttpErrorBody($err) {
+    if ($err.ErrorDetails -and $err.ErrorDetails.Message) { return $err.ErrorDetails.Message }
+    try {
+        $r = $err.Exception.Response
+        if ($r) { return (New-Object System.IO.StreamReader($r.GetResponseStream())).ReadToEnd() }
+    } catch {}
+    return ''
+}
+
+function Find-CoachModel([string]$p, [string]$key) {
+    $url = $coachDefaults[$p].url -replace '/chat/completions$', '/models'
     $headers = @{}
     if ($p -ne 'ollama') { $headers['Authorization'] = "Bearer $key" }
-    $body = @{ model = $model; temperature = 0.4; max_tokens = 500; messages = @(
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri $url -Headers $headers -TimeoutSec 30
+    $ids = @(([System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json).data | ForEach-Object { $_.id })
+    foreach ($m in $coachFallbacks[$p]) { if ($ids -contains $m) { return $m } }
+    return ($ids | Where-Object { $_ -notmatch 'whisper|tts|guard|embed|orpheus|playai|allam' } | Select-Object -First 1)
+}
+
+# Generic OpenAI-protocol chat call. Decodes the response explicitly as UTF-8
+# (PS 5.1 Invoke-RestMethod mis-decodes JSON bodies as Latin-1).
+function Send-CoachLLM([string]$p, [string]$key, [string]$model, [string]$system, [string]$user) {
+    $headers = @{}
+    if ($p -ne 'ollama') { $headers['Authorization'] = "Bearer $key" }
+    $req = @{ model = $model; temperature = 0.4; max_tokens = 500; messages = @(
         @{ role = 'system'; content = $system },
         @{ role = 'user'; content = $user }
-    ) } | ConvertTo-Json -Depth 5
-    $resp = Invoke-WebRequest -UseBasicParsing -Uri $def.url -Method Post -Headers $headers `
+    ) }
+    # Reasoning models (gpt-oss) spend tokens thinking before they answer. With 500 tokens
+    # the reply came back EMPTY (finish_reason=length); low effort plus more room fixes it.
+    if ($model -like 'openai/gpt-oss*') { $req.reasoning_effort = 'low'; $req.max_tokens = 1500 }
+    $body = $req | ConvertTo-Json -Depth 5
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri $coachDefaults[$p].url -Method Post -Headers $headers `
         -ContentType 'application/json; charset=utf-8' `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 120
     $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
-    return $json.choices[0].message.content.Trim()
+    $content = ([string]$json.choices[0].message.content -replace '(?s)<think>.*?</think>', '').Trim()
+    if (-not $content) { throw "Tomt svar fran $model (finish_reason: $($json.choices[0].finish_reason))" }
+    return $content
+}
+
+# Used by every coach feature: the report, the script generator, the live checklist.
+function Invoke-CoachLLM([string]$system, [string]$user) {
+    $p = $script:coach
+    $model = $coachDefaults[$p].model
+    $userModel = $false
+    if (Test-Path $coachModelCfg) { $m = (Get-Content $coachModelCfg -Raw -ErrorAction SilentlyContinue).Trim(); if ($m) { $model = $m; $userModel = $true } }
+    if (-not $userModel -and $script:coachModelAuto) { $model = $script:coachModelAuto }
+    $key = Get-CoachKey $p
+    if (-not $key) { throw "Ingen API-nyckel for coach-motorn ($p)" }
+    try {
+        return (Send-CoachLLM $p $key $model $system $user)
+    } catch {
+        $err = $_
+        $errBody = Get-HttpErrorBody $err
+        # A model name YOU chose (diktatorn-coach-model.txt) is never swapped behind your back.
+        if (-not $userModel -and $errBody -match 'model_not_found|does not exist|not found') {
+            $ny = $null
+            try { $ny = Find-CoachModel $p $key } catch {}
+            if ($ny -and $ny -ne $model) {
+                Write-Log "coach: modellen '$model' finns inte langre hos $p - byter till '$ny'"
+                $script:coachModelAuto = $ny
+                return (Send-CoachLLM $p $key $ny $system $user)
+            }
+        }
+        # Keep the real reason - without it the log said only "(404)" for weeks.
+        if ($errBody) { throw ("$($err.Exception.Message) $errBody".Trim()) }
+        throw $err
+    }
 }
 
 # Coach memory: past reports live in a local markdown archive; the last two are fed back
@@ -2403,7 +2530,7 @@ function Measure-Chunk([int]$i) {
         try {
             if ((Test-Path $s.wav) -and ((Get-Item $s.wav).Length -gt 8192)) {
                 [AudioPrep]::Clean($s.wav, $clean)
-                if ((Test-Path $clean) -and ((Get-Item $clean).Length -gt 16000)) {
+                if ((Test-Path $clean) -and ([AudioPrep]::VoicedSamples($clean) -ge $minVoicedSamples)) {
                     if ($s.you) { $y = Get-WavSeconds $clean } else { $o = Get-WavSeconds $clean }
                 }
             }
@@ -2548,7 +2675,7 @@ function Start-Meeting {
         $script:meetStamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $script:meetOutFile = Join-Path $outDir ('Mote_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.txt')
         $script:meetRec = New-Object MeetingRecorder
-        $script:meetRec.Start($script:meetDir, $script:micDevice, $chunkSec)   # rotation runs inside the recorder
+        $script:meetRec.Start($script:meetDir, (Get-RecMicDevice), $chunkSec)   # rotation runs inside the recorder
         $script:meeting = $true
         Save-LiveTranscript
         $meetTimer.Start()
@@ -2828,5 +2955,9 @@ $miQuit.add_Click({
 })
 
 Clear-OldMeetingAudio   # purge any kept meeting audio past the retention window
-$tray.ShowBalloonTip(2500, 'Diktatorn', (SvText 'Redo. H~all Ctrl+Shift f~or att diktera, Ctrl+Shift+M f~or m~ote.'), 'Info')
+if ($script:micOnlyVirtual) {
+    $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText 'Hittar ingen riktig mikrofon - bara virtuella (Voicemeeter/CABLE). De ~ar stumma n~ar programmet bakom dem inte k~or. V~elj mikrofon i menyn.'), 'Warning')
+} else {
+    $tray.ShowBalloonTip(2500, 'Diktatorn', (SvText 'Redo. H~all Ctrl+Shift f~or att diktera, Ctrl+Shift+M f~or m~ote.'), 'Info')
+}
 [System.Windows.Forms.Application]::Run($appContext)

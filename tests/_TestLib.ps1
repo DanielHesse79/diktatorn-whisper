@@ -46,6 +46,29 @@ function Import-AppFunction([string]$file, [string[]]$names) {
     }
 }
 
+# Define a script-level variable exactly as the app does, from its source line - a
+# plain value on one line, or a multi-line @{ ... } table (brace counted). Tests
+# used to hand-copy these; Test-CoachEngine kept a copy of $coachDefaults naming a
+# model Groq had retired, so it could only ever have tested the dead config.
+function Import-AppVariable([string]$file, [string]$name) {
+    $src = Get-Content (Join-Path $script:RepoRoot $file) -Raw
+    $m = [regex]::Match($src, ('(?m)^\$' + [regex]::Escape($name) + '\s*=\s*'))
+    if (-not $m.Success) { throw "hittar inte `$$name i $file" }
+    $valStart = $m.Index + $m.Length
+    if ($src.Substring($valStart, 2) -eq '@{') {
+        $depth = 0
+        for ($j = $valStart; $j -lt $src.Length; $j++) {
+            if ($src[$j] -eq '{') { $depth++ }
+            elseif ($src[$j] -eq '}') { $depth--; if ($depth -eq 0) { break } }
+        }
+        $text = $src.Substring($m.Index, $j - $m.Index + 1)
+    } else {
+        $end = $src.IndexOf("`n", $valStart); if ($end -lt 0) { $end = $src.Length }
+        $text = $src.Substring($m.Index, $end - $m.Index)
+    }
+    Set-Variable -Name $name -Scope Global -Value (& ([scriptblock]::Create(($text -replace ('^\$' + [regex]::Escape($name) + '\s*=\s*'), ''))))
+}
+
 # Extract an embedded C# block by its PowerShell variable name ($csPrep etc)
 # and compile it. Returns silently if the type already exists.
 function Import-AppCSharp([string]$file, [string]$varName, [string]$probeType, [string[]]$refs) {
