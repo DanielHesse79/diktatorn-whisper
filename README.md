@@ -17,6 +17,11 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 - **Dictation → typed at the cursor**, in any app:
   - **Hold `Ctrl+Shift`** (push-to-talk): speak, release, text is typed.
   - **`Ctrl+Shift+D`** (toggle): press to start, press again to stop.
+- **Recording indicator**: a small always-on-top badge — blinking dot, mode and elapsed time — shown
+  whenever the microphone is live. Windows 11 hides tray icons behind the chevron by default, so the
+  tray dot alone is easy to miss, and missing it is costly both ways: a whole meeting lost, or something
+  recorded that shouldn't have been. Drag it anywhere (position is remembered); double-click stops a
+  **meeting** recording. It never takes focus, so dictation still types into the app you were working in.
 - **Meeting language** (tray): **Swedish** (default) or **English** — an explicit choice, deliberately
   no auto-detect. The local engine (WhisperPS) can't detect language, only *force* one, and forcing the
   wrong one **translates** rather than transcribes: Swedish speech comes out as fluent English, English
@@ -94,6 +99,16 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
 published under Releases). It's a per-user install (no admin), creates Start-Menu/desktop shortcuts and an
 uninstaller, and downloads the dependencies automatically.
 
+The installer offers two **components**:
+
+| Component | Contains |
+|---|---|
+| **Diktatorn** (required) | Dictation, journal, meeting transcription, talanalys, dashboard |
+| **Sales coach** (optional) | `SaljScript.ps1` — call scripts as checklists that tick themselves off live |
+
+Leave *Sales coach* unchecked and the tray entry and dashboard line simply aren't there; everything else
+is unchanged. You can add or remove it later by re-running the installer and changing the selection.
+
 **Or via PowerShell directly:**
 ```powershell
 # From the repo folder:
@@ -128,11 +143,14 @@ The installer downloads everything that can't be redistributed here:
 | Dictate (toggle) | **Ctrl+Shift+D** to start/stop |
 | Journal note | **Ctrl+Shift+N** to start/stop |
 | Record a meeting | **Ctrl+Shift+M** (or tray menu) to start/stop |
-| Open sales script | Tray → *Sälj-script* |
+| Open sales script | Tray → *Sälj-script* (only if the Sales coach component is installed) |
+| Move the recording badge | Drag it. Double-click stops a **meeting** recording |
 | Pick mic / model / backend | Right-click the tray icon |
 | Quit | Right-click → Avsluta |
 
 Tray icon colours: 🟢 ready · 🔴 recording (dictation) · 🔵 recording (meeting) · 🟡 transcribing.
+While the mic is live the same state also shows as an always-on-top badge, so you don't have to go
+looking for the tray icon.
 
 ## Using Groq cloud (optional)
 
@@ -301,8 +319,11 @@ building the handover URI is a separate function from opening it, precisely so i
 `AudioPrep`. It shows that the old size gate lets silence through, and it checks the Whisper credit
 filter. `Test-MicSelect` covers mic selection when Voicemeeter/CABLE inputs come first and looks the
 mic up by name against this machine's real devices. `Test-CoachEngine` also points the coach at a
-retired model and expects it to switch to another model by itself. The suite takes ~15 s
-(`-Network` adds a few seconds).
+retired model and expects it to switch to another model by itself. `Test-RecOverlay` compiles the
+badge's real `RecOverlayForm` source and asserts the invariant that keeps dictation working —
+`ShowWithoutActivation` plus `WS_EX_NOACTIVATE`, so the badge can never steal the focus that typed
+text is aimed at — and that a saved position on a monitor that no longer exists falls back to the
+corner instead of drawing off-screen. The suite takes ~15 s (`-Network` adds a few seconds).
 
 ## Credits & license
 

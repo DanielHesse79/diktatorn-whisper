@@ -16,8 +16,16 @@ egen dator (privat), med ett snabbt moln-alternativ när du vill.
    - 🔴 **röd** = spelar in diktering
    - 🔵 **blå** = spelar in möte
    - 🟡 **gul** = transkriberar
+3. **Så fort mikrofonen går** visas dessutom en liten **bricka ovanpå alla fönster** med en blinkande
+   prick, vilket läge som kör och hur länge det pågått – till exempel `MÖTE 12:34`. Den finns där för
+   att tray-pricken är lätt att missa: Windows 11 gömmer tray-ikoner bakom pilen `^` som standard.
+   - **Dra** brickan dit du vill ha den. Positionen kommer ihåg sig till nästa gång.
+   - **Dubbelklicka** för att stoppa en **mötesinspelning**. Diktering och journal varar bara sekunder,
+     så där gör dubbelklicket ingenting med flit.
+   - Den tar aldrig fokus från det du håller på med – dikterad text hamnar fortfarande i Word, inte i brickan.
 
-> Tips: klicka på pilen `^` i aktivitetsfältet och dra ut Diktatorn-pricken så den alltid syns.
+> Tips: klicka på pilen `^` i aktivitetsfältet och dra ut Diktatorn-pricken om du vill se läget även
+> när inget spelas in.
 
 ---
 
@@ -170,6 +178,10 @@ tray-menyn → **Öppna dagens journal**.
 ---
 
 ## 3c. Sälj-script – checklista som bockar av sig själv
+
+> **Valfri del.** Sälj-coachen är en egen komponent i installationsprogrammet. Har du inte kryssat i
+> **Säljcoach** vid installationen finns den här menyposten inte, och resten av Diktatorn fungerar precis
+> som vanligt. Kör installationsprogrammet igen och ändra valet om du vill lägga till eller ta bort den.
 
 Tray-menyn → **Sälj-script** öppnar scripthanteraren: alla dina script i en lista till vänster,
 texten redigerbar till höger.

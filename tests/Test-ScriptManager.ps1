@@ -7,7 +7,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 Import-AppUi
-Import-AppFunction 'Diktatorn.ps1' @(
+Import-AppFunction 'SaljScript.ps1' @(
     'Get-ScriptFiles', 'New-ScriptName', 'Parse-SalesScript',
     'Update-ScriptList', 'Save-CurrentScript', 'Confirm-ScriptSave', 'Open-ScriptManager')
 

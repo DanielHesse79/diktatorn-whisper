@@ -2,7 +2,7 @@
 # Swedish characters intact, and New-ScriptName must produce ASCII-safe filenames.
 . (Join-Path $PSScriptRoot '_TestLib.ps1')
 
-Import-AppFunction 'Diktatorn.ps1' @('Parse-SalesScript', 'New-ScriptName')
+Import-AppFunction 'SaljScript.ps1' @('Parse-SalesScript', 'New-ScriptName')
 
 $example = Join-Path $script:RepoRoot 'exempel-saljsamtal.md'
 if (-not (Test-Path $example)) { Skip-Test 'exempel-saljsamtal.md saknas' }

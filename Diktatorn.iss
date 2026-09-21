@@ -4,7 +4,7 @@
 ; Compile:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" Diktatorn.iss
 
 #define MyAppName "Diktatorn"
-#define MyAppVersion "1.3.1"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "Daniel Hesse"
 #define MyAppURL "https://github.com/DanielHesse79/diktatorn-whisper"
 
@@ -31,6 +31,14 @@ SolidCompression=yes
 Name: "swedish"; MessagesFile: "compiler:Languages\Swedish.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Types]
+Name: "full";   Description: "Allt (rekommenderas)"
+Name: "custom"; Description: "Valj sjalv"; Flags: iscustom
+
+[Components]
+Name: "core"; Description: "Diktatorn - diktering, journal och motestranskribering"; Types: full custom; Flags: fixed
+Name: "salj"; Description: "Saljcoach - saljscript med automatisk avbockning under motet"; Types: full
+
 [Tasks]
 Name: "desktopicon"; Description: "Skapa en genvag pa skrivbordet"; GroupDescription: "Genvagar:"
 Name: "autostart"; Description: "Starta Diktatorn automatiskt vid inloggning"; GroupDescription: "Genvagar:"
@@ -43,7 +51,8 @@ Source: "Generate-Icon.ps1";    DestDir: "{app}"; Flags: ignoreversion
 Source: "Diktatorn.ico";        DestDir: "{app}"; Flags: ignoreversion
 Source: "Install-Diktatorn.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";            DestDir: "{app}"; Flags: ignoreversion
-Source: "exempel-saljsamtal.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "SaljScript.ps1";       DestDir: "{app}"; Flags: ignoreversion; Components: salj
+Source: "exempel-saljsamtal.md"; DestDir: "{app}"; Flags: ignoreversion; Components: salj
 Source: "Anvandarmanual.md";    DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE";              DestDir: "{app}"; Flags: ignoreversion
 
@@ -61,6 +70,13 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
 ; Offer to launch right after install
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\Diktatorn.vbs"""; Description: "Starta Diktatorn nu"; Flags: postinstall nowait skipifsilent
 
+
+[InstallDelete]
+; Inno tar inte bort filer fran en komponent som avmarkeras vid ominstallation.
+; Utan det har skulle SaljScript.ps1 ligga kvar och Diktatorn ladda den anda.
+Type: files; Name: "{app}\SaljScript.ps1";       Components: not salj
+Type: files; Name: "{app}\exempel-saljsamtal.md"; Components: not salj
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\WhisperPS"
 Type: filesandordirs; Name: "{app}\lib"
@@ -76,3 +92,4 @@ Type: files; Name: "{app}\diktatorn-groq.txt"
 Type: files; Name: "{app}\diktatorn-openrouter.txt"
 Type: files; Name: "{app}\diktatorn-telefon-utgang.txt"
 Type: files; Name: "{app}\diktatorn-telefon-server.txt"
+Type: files; Name: "{app}\diktatorn-overlay.txt"
