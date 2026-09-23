@@ -2538,6 +2538,37 @@ function Get-MeetMinutes {
     return (New-TimeSpan -Start $script:meetStart -End $end).TotalMinutes
 }
 
+# Forgotten recordings. One meeting started 2026-09-18 14:06 was left running until
+# 09-20 16:03 - 50 hours, and 3 082 of its 3 737 lines were Whisper filling silence.
+# Two warnings: nobody has said anything for a while (the call has most likely ended),
+# and the recording is simply long. Both repeat, since the first balloon is easy to miss.
+$idleWarnSec   = if ($env:DIKTATORN_IDLE_WARN_SEC)   { [int]$env:DIKTATORN_IDLE_WARN_SEC }   else { 600 }    # 10 min tystnad
+$longWarnSec   = if ($env:DIKTATORN_LONG_WARN_SEC)   { [int]$env:DIKTATORN_LONG_WARN_SEC }   else { 7200 }   # 2 h
+$longRepeatSec = if ($env:DIKTATORN_LONG_REPEAT_SEC) { [int]$env:DIKTATORN_LONG_REPEAT_SEC } else { 3600 }   # sedan varje timme
+
+# Trailing seconds in which neither you nor the others said anything. Silent chunks
+# measure 0 s since the voiced-sample gate, so a meeting left running after the call
+# ended grows this by one chunk every $chunkSec.
+function Get-MeetIdleSeconds {
+    $n = $script:chunkListYou.Count
+    $k = $n - 1
+    while (($k -ge 0) -and (($script:chunkListYou[$k] + $script:chunkListOthers[$k]) -lt 1.0)) { $k-- }
+    return ($n - 1 - $k) * $chunkSec
+}
+
+# 'idle', 'long' or $null. Kept apart from the timer so the thresholds can be tested
+# without a recording. Idle re-arms as soon as someone speaks; both then repeat.
+function Get-MeetLengthWarning([double]$elapsed, [double]$idle) {
+    if ($idle -lt $script:idleWarnedAt) { $script:idleWarnedAt = 0 }
+    if (($idle -ge $idleWarnSec) -and (($idle - $script:idleWarnedAt) -ge $idleWarnSec)) {
+        $script:idleWarnedAt = $idle; return 'idle'
+    }
+    if (($elapsed -ge $longWarnSec) -and (($script:longWarnedAt -eq 0) -or (($elapsed - $script:longWarnedAt) -ge $longRepeatSec))) {
+        $script:longWarnedAt = $elapsed; return 'long'
+    }
+    return $null
+}
+
 function Save-LiveTranscript([switch]$final) {
     $body = New-Object 'System.Collections.Generic.List[string]'
     $body.Add("Mote $($script:meetStamp)  (${labelYou} = din mikrofon, ${labelOthers} = datorljudet)")
@@ -2620,6 +2651,7 @@ function Start-Meeting {
         $script:chunkListOthers = New-Object 'System.Collections.Generic.List[double]'
         $script:crocLastWarn = 0
         $script:meetStart = Get-Date; $script:meetEnd = $null
+        $script:idleWarnedAt = 0; $script:longWarnedAt = 0
         $script:meetStamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $script:meetOutFile = Join-Path $outDir ('Mote_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.txt')
         $script:meetRec = New-Object MeetingRecorder
@@ -2771,6 +2803,18 @@ $meetTimer.add_Tick({
                         Write-Log ("croc-warning: share=" + [math]::Round($share) + "% window=" + $winChunks + " chunks")
                     }
                 }
+            }
+        }
+        # Long or forgotten recording. Runs whatever the talanalys setting is.
+        $idle = Get-MeetIdleSeconds
+        switch (Get-MeetLengthWarning $elapsed $idle) {
+            'idle' {
+                Write-Log ("langd-varning: tyst i {0:N0} min" -f ($idle / 60))
+                $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText ("Ingen har sagt n~agot p~a {0} min. P~ag~ar m~otet fortfarande? Ctrl+Shift+M eller dubbelklick p~a inspelningsbrickan stoppar." -f [int]($idle / 60))), 'Warning')
+            }
+            'long' {
+                Write-Log ("langd-varning: inspelningen har gatt i {0:N0} min" -f ($elapsed / 60))
+                $tray.ShowBalloonTip(9000, 'Diktatorn', (SvText ("M~otesinspelningen har p~ag~att i {0} timmar. Gl~omt att stoppa? Ctrl+Shift+M stoppar." -f [int][math]::Floor($elapsed / 3600))), 'Warning')
             }
         }
         # Sales-script auto-check: match new transcript lines against unchecked items.

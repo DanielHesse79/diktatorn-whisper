@@ -41,7 +41,9 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   loopback) and **your mic** as separate streams, transcribed **continuously during the meeting** in 30 s
   chunks with **speaker labels** (`Du:` = you, `Övriga:` = the others — the label is simply which stream
   the audio came from, no ML diarization needed). The transcript file grows live (tray → *Visa transkript*),
-  and **talk-time stats** (minutes + % per side) are appended on stop.
+  and **talk-time stats** (minutes + % per side) are appended on stop. A recording left running is
+  flagged with a balloon when nobody has spoken for 10 minutes (repeats while it stays quiet) and when
+  it passes 2 hours (then hourly). One forgotten recording ran for 50 hours. See `Get-MeetLengthWarning`.
 - **Private speech analysis** (optional, analyzes ONLY your own lines, never the other side):
   filler-word counting ("typ", "liksom", "eh"...), questions asked, longest monologue, a per-meeting
   trend CSV (calls under 2 minutes are left out of it and get no coach report), a live **crocodile warning** when you've talked >70% of the last 10 minutes (big mouth,

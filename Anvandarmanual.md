@@ -129,6 +129,19 @@ avstängt som standard.
 > ⚠️ Informera alltid deltagarna om att mötet spelas in/transkriberas. För känsliga möten: använd
 > **Lokal** transkribering (se punkt 5), så lämnar ljudet aldrig din dator.
 
+### Varning för glömd inspelning
+
+En mötesinspelning som får fortsätta efter samtalet spelar bara in tystnad, i värsta fall i flera
+dygn. Diktatorn varnar därför med en ballong i två fall:
+
+| Varning | När | Upprepas |
+|---|---|---|
+| **Ingen har sagt något på 10 min** | Varken du eller de andra har pratat på 10 minuter | Var 10:e minut så länge det är tyst. Så fort någon pratar börjar räkningen om. |
+| **Inspelningen har pågått i 2 timmar** | Efter 2 timmar, oavsett hur mycket som sägs | Varje timme därefter |
+
+Stoppa med **Ctrl+Shift+M** eller genom att dubbelklicka på inspelningsbrickan. Pågår mötet
+fortfarande kan du bara låta ballongen försvinna.
+
 ### Talanalys (valfritt): coacha dig själv, inte de andra
 Slå på under **tray-ikonen → Talanalys (privat, bara du)**. Analysen tittar **enbart på dina egna
 repliker** – aldrig på motpartens.
