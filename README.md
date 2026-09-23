@@ -44,7 +44,7 @@ no .NET SDK required — just Windows PowerShell and the in-box .NET Framework.
   and **talk-time stats** (minutes + % per side) are appended on stop.
 - **Private speech analysis** (optional, analyzes ONLY your own lines, never the other side):
   filler-word counting ("typ", "liksom", "eh"...), questions asked, longest monologue, a per-meeting
-  trend CSV, a live **crocodile warning** when you've talked >70% of the last 10 minutes (big mouth,
+  trend CSV (calls under 2 minutes are left out of it and get no coach report), a live **crocodile warning** when you've talked >70% of the last 10 minutes (big mouth,
   small ears), and an optional **AI coach report** appended to the transcript. The coach **remembers** —
   past reports are archived locally and fed back, so it follows up on its own exercises ("questions up
   from 1 to 3"). The coach engine is pluggable: **Groq** (free, default), **Ollama** (fully local), or

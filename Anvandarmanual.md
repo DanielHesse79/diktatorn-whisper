@@ -144,6 +144,10 @@ Resultatet läggs längst ner i mötestranskriptet. Dessutom sparas en trendfil
 utfyllnadsord per minut, frågor. Transkriptet du läser är alltid städat; analysen tittar på
 råversionen av ditt tal under huven.
 
+Samtal som är kortare än **2 minuter** hamnar inte i trenden och får ingen AI-coachrapport. På så kort
+tid räcker ett par repliker för att ge 90 % talandel, och ett sådant värde skulle dra snittet åt fel
+håll i flera möten framåt. Transkriptet och statistiken för själva samtalet får du ändå.
+
 **AI-coachen har minne.** Rapporterna sparas i `Dokument\Transcriptions\coach-arkiv.md` och
 coachen läser sina senaste rapporter inför varje nytt möte – den följer alltså upp övningen den
 gav dig ("frågorna upp från 1 till 3, bra") istället för att börja om varje gång.

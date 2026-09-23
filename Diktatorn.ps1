@@ -42,6 +42,10 @@ New-Item -ItemType Directory -Force $journalDir | Out-Null
 # --- Talanalys (private speech analysis; only YOUR mic lines are ever analyzed) ---
 $talanalysCfg = Join-Path $root 'diktatorn-talanalys.txt'   # 'off' | 'stats' | 'coach'
 $trendCsv     = Join-Path $outDir 'talanalys-trend.csv'
+$trendHeader  = 'datum;minuter;talandel_pct;utfyllnad_per_min;fragor;langsta_monolog_min'
+# Calls shorter than this never reach the trend or the coach: a handful of lines swing
+# talk share and fillers/min so far that one short call skews every average after it.
+$trendMinMinutes = 2
 # AI coach engine: selectable provider. All three speak the OpenAI chat-completions
 # protocol, so one implementation serves them all (url + key + model differ).
 $coachCfg          = Join-Path $root 'diktatorn-coach.txt'         # 'groq' | 'ollama' | 'openrouter'
@@ -2071,21 +2075,31 @@ function Build-TrendTab($tab) {
 
 function Refresh-TrendView {
     if (-not $script:dashTrendList) { return }
-    $script:trendRows = @()
+    $script:trendRows = @(Get-TrendRows)
     $script:dashTrendList.Items.Clear()
-    if (Test-Path $trendCsv) {
-        $lines = @(Get-Content $trendCsv -Encoding UTF8 | Select-Object -Skip 1 | Where-Object { $_ -and ($_ -match ';') })
-        foreach ($ln in $lines) {
-            $c = $ln -split ';'
-            if ($c.Count -lt 6) { continue }
-            $script:trendRows += [pscustomobject]@{ datum=$c[0]; mins=$c[1]; share=[double]($c[2]); fill=$c[3]; q=$c[4]; monolog=$c[5] }
-            $li = New-Object System.Windows.Forms.ListViewItem($c[0])
-            foreach ($v in @($c[1], $c[2], $c[3], $c[4], $c[5])) { [void]$li.SubItems.Add([string]$v) }
-            if ([double]$c[2] -ge 70) { $li.ForeColor = $script:uiWarn }
-            [void]$script:dashTrendList.Items.Add($li)
-        }
+    foreach ($r in $script:trendRows) {
+        $li = New-Object System.Windows.Forms.ListViewItem($r.datum)
+        foreach ($v in @($r.mins, $r.sharePct, $r.fill, $r.q, $r.monolog)) { [void]$li.SubItems.Add([string]$v) }
+        if ($r.share -ge 70) { $li.ForeColor = $script:uiWarn }
+        [void]$script:dashTrendList.Items.Add($li)
     }
     if ($script:dashTrendChart) { $script:dashTrendChart.Invalidate() }
+}
+
+# Every reader of the trend goes through here. Filtering on read (not only on write) also
+# drops short calls logged before the limit existed, without rewriting the user's file.
+function Get-TrendRows {
+    if (-not (Test-Path $trendCsv)) { return @() }
+    $rows = @()
+    foreach ($ln in @(Get-Content $trendCsv -Encoding UTF8 | Select-Object -Skip 1)) {
+        if (-not $ln -or ($ln -notmatch ';')) { continue }
+        $c = $ln -split ';'
+        if ($c.Count -lt 6) { continue }
+        $m = 0
+        if (-not [int]::TryParse($c[1], [ref]$m) -or ($m -lt $trendMinMinutes)) { continue }
+        $rows += [pscustomobject]@{ line=$ln; datum=$c[0]; mins=$c[1]; sharePct=$c[2]; share=[double]($c[2]); fill=$c[3]; q=$c[4]; monolog=$c[5] }
+    }
+    return $rows
 }
 
 # --- Shared transcription ---
@@ -2303,22 +2317,19 @@ function Count-Fillers([string]$text) {
 }
 # Trend: one CSV row per meeting -> your progress over time (local file, private).
 function Get-TrendPrev {
-    if (-not (Test-Path $trendCsv)) { return $null }
-    $rows = @(Get-Content $trendCsv | Select-Object -Skip 1 | Where-Object { $_ } | Select-Object -Last 5)
+    $rows = @(Get-TrendRows | Select-Object -Last 5)
     if ($rows.Count -eq 0) { return $null }
-    $sh = @(); $fi = @()
-    foreach ($r in $rows) { $c = $r -split ';'; if ($c.Count -ge 4) { $sh += [double]$c[2]; $fi += [double]$c[3] } }
-    if ($sh.Count -eq 0) { return $null }
-    @{ n = $sh.Count
-       share = [math]::Round(($sh | Measure-Object -Average).Average)
-       fill  = [math]::Round(($fi | Measure-Object -Average).Average, 1) }
+    @{ n = $rows.Count
+       share = [math]::Round(($rows | ForEach-Object { $_.share } | Measure-Object -Average).Average)
+       fill  = [math]::Round(($rows | ForEach-Object { [double]$_.fill } | Measure-Object -Average).Average, 1) }
 }
-function Add-TrendRow([int]$mins, [int]$sharePct, [double]$fillPerMin, [int]$questions, [double]$monologMin) {
+function Add-TrendRow([double]$mins, [int]$sharePct, [double]$fillPerMin, [int]$questions, [double]$monologMin) {
+    if ($mins -lt $trendMinMinutes) { return }
     try {
         if (-not (Test-Path $trendCsv)) {
-            [System.IO.File]::WriteAllText($trendCsv, "datum;minuter;talandel_pct;utfyllnad_per_min;fragor;langsta_monolog_min`r`n", [System.Text.UTF8Encoding]::new($true))
+            [System.IO.File]::WriteAllText($trendCsv, "$trendHeader`r`n", [System.Text.UTF8Encoding]::new($true))
         }
-        $row = ('{0};{1};{2};{3};{4};{5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm'), $mins, $sharePct,
+        $row = ('{0};{1};{2};{3};{4};{5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm'), [int][math]::Round($mins), $sharePct,
             $fillPerMin.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture), $questions,
             $monologMin.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))
         Add-Content -Path $trendCsv -Value $row
@@ -2438,7 +2449,10 @@ function Get-CoachReport([string]$youText, [string]$statsSummary) {
     $mem = Get-CoachMemory
     if (-not $mem) { $mem = '(inga tidigare rapporter)' }
     $trendRaw = ''
-    if (Test-Path $trendCsv) { try { $trendRaw = (Get-Content $trendCsv | Select-Object -Last 6) -join "`n" } catch {} }
+    try {
+        $recent = @(Get-TrendRows | Select-Object -Last 6)
+        if ($recent.Count) { $trendRaw = (@($trendHeader) + @($recent | ForEach-Object { $_.line })) -join "`n" }
+    } catch {}
     $usr = "TIDIGARE COACHRAPPORTER:`n$mem`n`nTREND-CSV (senaste moten):`n$trendRaw`n`nDAGENS STATISTIK:`n$statsSummary`n`nMINA REPLIKER FRAN DAGENS MOTE:`n$youText"
     $report = Invoke-CoachLLM $sys $usr
     if ($report) { Add-CoachMemory $report }
@@ -2517,13 +2531,20 @@ function Process-ReadyChunks([int]$upTo) {
     }
 }
 
+# Call length up to the moment the user pressed stop. Stop-Meeting transcribes (deferred
+# mode) and asks the coach before the length is read, which used to add minutes to it.
+function Get-MeetMinutes {
+    $end = if ($script:meetEnd) { $script:meetEnd } else { Get-Date }
+    return (New-TimeSpan -Start $script:meetStart -End $end).TotalMinutes
+}
+
 function Save-LiveTranscript([switch]$final) {
     $body = New-Object 'System.Collections.Generic.List[string]'
     $body.Add("Mote $($script:meetStamp)  (${labelYou} = din mikrofon, ${labelOthers} = datorljudet)")
     $body.Add('=' * 60)
     foreach ($l in $script:meetLines) { $body.Add($l) }
     if ($final) {
-        $totalMin = [math]::Round((New-TimeSpan -Start $script:meetStart -End (Get-Date)).TotalMinutes)
+        $totalMin = [math]::Round((Get-MeetMinutes))
         $vy = $script:meetSecsYou; $vo = $script:meetSecsOthers; $tot = $vy + $vo
         if ($tot -gt 0) {
             $py = [math]::Round(100 * $vy / $tot); $po = 100 - $py
@@ -2598,7 +2619,7 @@ function Start-Meeting {
         $script:chunkListYou = New-Object 'System.Collections.Generic.List[double]'
         $script:chunkListOthers = New-Object 'System.Collections.Generic.List[double]'
         $script:crocLastWarn = 0
-        $script:meetStart = Get-Date
+        $script:meetStart = Get-Date; $script:meetEnd = $null
         $script:meetStamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
         $script:meetOutFile = Join-Path $outDir ('Mote_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.txt')
         $script:meetRec = New-Object MeetingRecorder
@@ -2626,6 +2647,7 @@ function Start-Meeting {
 function Stop-Meeting {
     if (-not $script:meeting) { return }
     $script:meeting = $false
+    $script:meetEnd = Get-Date
     $script:meetFinishing = $true   # blocks dictation hotkeys while the post-meeting batch runs
     $meetTimer.Stop()
     $miMeeting.Text = (SvText 'Starta m~otesinspelning (Ctrl+Shift+M)')
@@ -2643,7 +2665,8 @@ function Stop-Meeting {
             return
         }
         Save-MeetingAudio   # opt-in 7-day archive, before the temp dir is cleaned below
-        if (($script:meetAnalysis -eq 'coach') -and ($script:meetSecsYou -gt 5)) {
+        # A coach report is trend data too: the next report follows up on its numbers and exercise.
+        if (($script:meetAnalysis -eq 'coach') -and ($script:meetSecsYou -gt 5) -and ((Get-MeetMinutes) -ge $trendMinMinutes)) {
             Set-Status 'AI-coach analyserar...' $icoWork
             [System.Windows.Forms.Application]::DoEvents()
             try {
@@ -2667,7 +2690,7 @@ function Stop-Meeting {
                 for ($k = 0; $k -lt $script:chunkListYou.Count; $k++) {
                     if (($script:chunkListYou[$k] -ge 4) -and ($script:chunkListOthers[$k] -le 1.5)) { $run++; if ($run -gt $best) { $best = $run } } else { $run = 0 }
                 }
-                Add-TrendRow ([int][math]::Round((New-TimeSpan -Start $script:meetStart -End (Get-Date)).TotalMinutes)) $share $fPerMin $script:meetQuestions ([math]::Round($best * $chunkSec / 60, 1))
+                Add-TrendRow (Get-MeetMinutes) $share $fPerMin $script:meetQuestions ([math]::Round($best * $chunkSec / 60, 1))
             }
         }
         if ($script:meetFailed) {
